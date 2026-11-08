@@ -1,5 +1,6 @@
 <template>
-  <template v-if="slides.length">
+  <EmbedApp v-if="embedded" />
+  <template v-else-if="slides.length">
     <Screen v-if="screening" />
     <Editor v-else-if="_isPC" />
     <Mobile v-else />
@@ -8,6 +9,8 @@
 </template>
 
 <script lang="ts" setup>
+import EmbedApp from './embed/EmbedApp.vue'
+import { embedded } from './embed/bridge'
 import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { nanoid } from 'nanoid'
@@ -34,11 +37,12 @@ const { screening } = storeToRefs(screenStore)
 
 const isAudienceMode = new URLSearchParams(window.location.search).get('mode') === 'audience'
 
-if (import.meta.env.MODE !== 'development') {
+if (!embedded && import.meta.env.MODE !== 'development') {
   window.onbeforeunload = () => false
 }
 
 onMounted(async () => {
+  if (embedded) return
   if (isAudienceMode) {
     slidesStore.setSlides([{
       id: nanoid(10),

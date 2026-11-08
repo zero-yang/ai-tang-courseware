@@ -1,8 +1,8 @@
+import { embedded } from '@/embed/bridge'
 import axios from './axios'
 import fetchRequest from './fetch'
 
-// export const SERVER_URL = 'http://localhost:5000'
-export const SERVER_URL = (import.meta.env.MODE === 'development') ? '/api' : 'https://server.pptist.cn'
+export const SERVER_URL = import.meta.env.VITE_PPTIST_SERVICE_URL || ''
 
 interface ImageSearchPayload {
   query: string;
@@ -41,6 +41,7 @@ export default {
   },
 
   searchImage(body: ImageSearchPayload): Promise<any> {
+    if (embedded || !SERVER_URL) return Promise.reject(new Error('此在线服务尚未接入'))
     return axios.post(`${SERVER_URL}/tools/img_search`, body)
   },
 
@@ -50,6 +51,7 @@ export default {
     provider,
     model,
   }: AIPPTOutlinePayload): Promise<any> {
+    if (embedded || !SERVER_URL) return Promise.reject(new Error('此在线服务尚未接入'))
     return fetchRequest(`${SERVER_URL}/tools/aippt_outline`, {
       method: 'POST',
       body: JSON.stringify({
@@ -69,6 +71,7 @@ export default {
     provider,
     model,
   }: AIPPTPayload): Promise<any> {
+    if (embedded || !SERVER_URL) return Promise.reject(new Error('此在线服务尚未接入'))
     return fetchRequest(`${SERVER_URL}/tools/aippt`, {
       method: 'POST',
       body: JSON.stringify({
@@ -86,6 +89,7 @@ export default {
     content,
     command,
   }: AIWritingPayload): Promise<any> {
+    if (embedded || !SERVER_URL) return Promise.reject(new Error('此在线服务尚未接入'))
     return fetchRequest(`${SERVER_URL}/tools/ai_writing`, {
       method: 'POST',
       body: JSON.stringify({

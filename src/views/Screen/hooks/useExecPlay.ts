@@ -1,3 +1,4 @@
+import { embedded, send, subscribe } from '@/embed/bridge'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { throttle } from 'lodash'
 import { storeToRefs } from 'pinia'
@@ -31,7 +32,7 @@ export default () => {
 
   // 非观众模式：创建广播频道，向观众视图发送指令并响应状态请求
   let syncChannel: BroadcastChannel | null = null
-  if (!isAudienceMode) {
+  if (!embedded && !isAudienceMode) {
     syncChannel = new BroadcastChannel(AUDIENCE_SYNC_CHANNEL)
     syncChannel.onmessage = ({ data }: MessageEvent<SyncMessage>) => {
       if (data.type === 'REQUEST_STATE') {
@@ -176,6 +177,7 @@ export default () => {
   // 向上播放遇到动画时，仅撤销到动画执行前的状态，不需要反向播放动画
   // 撤回到上一页时，若该页从未播放过（意味着不存在动画状态），需要将动画索引置为最小值（初始状态），否则置为最大值（最终状态）
   const execPrev = (broadcast = true) => {
+    if (embedded && inAnimation.value) return
     if (broadcast) syncChannel?.postMessage({ type: 'EXEC_PREV' } as SyncMessage)
     if (formatedAnimations.value.length && animationIndex.value > 0) {
       revokeAnimation()
@@ -195,6 +197,7 @@ export default () => {
     inAnimation.value = false
   }
   const execNext = () => {
+    if (embedded && inAnimation.value) return
     syncChannel?.postMessage({ type: 'EXEC_NEXT' } as SyncMessage)
     if (formatedAnimations.value.length && animationIndex.value < formatedAnimations.value.length) {
       runAnimation()
@@ -213,6 +216,32 @@ export default () => {
       inAnimation.value = false
     }
   }
+
+  const reportState = () => send('PLAYBACK_STATE', {
+    page: slideIndex.value + 1, pageCount: slides.value.length, step: animationIndex.value,
+    busy: inAnimation.value,
+    canPrev: slideIndex.value > 0 || animationIndex.value > 0,
+    canNext: slideIndex.value < slides.value.length - 1 || animationIndex.value < formatedAnimations.value.length,
+  })
+  const recentRequests = new Set<string>()
+  const unsubscribeBridge = embedded ? subscribe(message => {
+    if (message.type !== 'PLAY' || !['next', 'prev'].includes(String(message.payload.action))) return
+    if (!recentRequests.has(message.requestId)) {
+      recentRequests.add(message.requestId)
+      if (recentRequests.size > 100) recentRequests.delete(recentRequests.values().next().value!)
+      if (message.payload.action === 'next') execNext()
+      else execPrev()
+    }
+    reportState()
+    send('ACK', {}, message.requestId)
+  }) : () => {}
+  watch([slideIndex, animationIndex, inAnimation], () => {
+    if (embedded) reportState()
+  }, { flush: 'post' })
+  onMounted(() => {
+    if (embedded) reportState()
+  })
+  onUnmounted(unsubscribeBridge)
 
   // 自动播放
   const autoPlayInterval = ref(2500)

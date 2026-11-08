@@ -7,6 +7,7 @@
 </template>
 
 <script lang="ts" setup>
+import { embedded } from '@/embed/bridge'
 import { onMounted, onUnmounted, ref } from 'vue'
 import { KEYS } from '@/configs/hotkey'
 import useScreening from '@/hooks/useScreening'
@@ -15,7 +16,7 @@ import AudienceView from './AudienceView.vue'
 import BaseView from './BaseView.vue'
 import PresenterView from './PresenterView.vue'
 
-const isAudienceMode = new URLSearchParams(window.location.search).get('mode') === 'audience'
+const isAudienceMode = !embedded && new URLSearchParams(window.location.search).get('mode') === 'audience'
 
 const viewMode = ref<'base' | 'presenter'>('base')
 
@@ -25,7 +26,7 @@ const changeViewMode = (mode: 'base' | 'presenter') => {
 
 const { exitScreening: _exitScreening } = useScreening()
 
-const syncChannel = !isAudienceMode ? new BroadcastChannel('pptist-audience-sync') : null
+const syncChannel = !embedded && !isAudienceMode ? new BroadcastChannel('pptist-audience-sync') : null
 
 const exitScreening = () => {
   syncChannel?.postMessage({ type: 'EXIT' })

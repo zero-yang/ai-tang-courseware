@@ -32,12 +32,18 @@ export default (wrapRef?: ShallowRef<HTMLElement | null>) => {
     slideHeight.value = height
   }
 
+  let resizeObserver: ResizeObserver | undefined
   onMounted(() => {
+    if (wrapRef?.value) {
+      resizeObserver = new ResizeObserver(setSlideContentSize)
+      resizeObserver.observe(wrapRef.value)
+    }
     setSlideContentSize()
     window.addEventListener('resize', setSlideContentSize)
   })
   onUnmounted(() => {
     window.removeEventListener('resize', setSlideContentSize)
+    resizeObserver?.disconnect()
   })
 
   watch(viewportRatio, setSlideContentSize)

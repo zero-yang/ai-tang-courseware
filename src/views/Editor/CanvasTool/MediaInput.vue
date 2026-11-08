@@ -35,6 +35,7 @@
 </template>
 
 <script lang="ts" setup>
+import { embedded } from '@/embed/bridge'
 import { ref } from 'vue'
 import message from '@/utils/message'
 import { MIME_MAP } from '@/configs/mime'
@@ -57,8 +58,8 @@ const emit = defineEmits<{
 
 const type = ref<TypeKey>('video')
 
-const videoSrc = ref('https://videos.pexels.com/video-files/29261597/12623866_640_360_24fps.mp4')
-const audioSrc = ref('https://freesound.org/data/previews/614/614107_11861866-lq.mp3')
+const videoSrc = ref(embedded ? '' : 'https://videos.pexels.com/video-files/29261597/12623866_640_360_24fps.mp4')
+const audioSrc = ref(embedded ? '' : 'https://freesound.org/data/previews/614/614107_11861866-lq.mp3')
 
 const tabs: TabItem[] = [
   { key: 'video', label: '视频' },
@@ -78,6 +79,7 @@ const insertAudio = () => {
 const uploadVideo = (files: FileList) => {
   const file = files[0]
   if (!file) return
+  if (embedded && file.size > 50 * 1024 * 1024) return message.error('单个音视频不能超过 50 MB')
   const ext = MIME_MAP[file.type] || ''
   emit('insertVideo', { src: URL.createObjectURL(file), ext })
 }
@@ -85,6 +87,7 @@ const uploadVideo = (files: FileList) => {
 const uploadAudio = (files: FileList) => {
   const file = files[0]
   if (!file) return
+  if (embedded && file.size > 50 * 1024 * 1024) return message.error('单个音视频不能超过 50 MB')
   const ext = MIME_MAP[file.type] || ''
   emit('insertAudio', { src: URL.createObjectURL(file), ext })
 }

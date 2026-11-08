@@ -1,5 +1,5 @@
 <template>
-  <div class="base-view" :class="{ 'laser-pen': laserPen }">
+  <div ref="baseViewRef" class="base-view" :class="{ 'laser-pen': laserPen }">
     <ScreenSlideList
       :slideWidth="slideWidth"
       :slideHeight="slideHeight"
@@ -30,13 +30,13 @@
       @close="timerlVisible = false" 
     />
 
-    <div class="tools-left">
+    <div v-if="!embedded" class="tools-left">
       <i-custom:left class="tool-btn" @click="execPrev()" />
       <i-custom:right class="tool-btn" @click="execNext()" />
     </div>
 
     <div 
-      class="tools-right" :class="{ 'visible': rightToolsVisible }" 
+      v-if="!embedded" class="tools-right" :class="{ 'visible': rightToolsVisible }"
       @mouseleave="rightToolsVisible = false"
       @mouseenter="rightToolsVisible = true"
     >
@@ -58,7 +58,8 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue'
+import { embedded } from '@/embed/bridge'
+import { ref, useTemplateRef } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSlidesStore } from '@/store'
 import type { ContextmenuItem } from '@/components/Contextmenu/types'
@@ -102,7 +103,8 @@ const {
   broadcastExit,
 } = useExecPlay()
 
-const { slideWidth, slideHeight } = useSlideSize()
+const baseViewRef = useTemplateRef<HTMLElement>('baseViewRef')
+const { slideWidth, slideHeight } = useSlideSize(baseViewRef)
 const { exitScreening: _exitScreening } = useScreening()
 const { fullscreenState, manualExitFullscreen } = useFullscreen()
 
@@ -123,6 +125,7 @@ const exitScreening = () => {
 }
 
 const contextmenus = (): ContextmenuItem[] => {
+  if (embedded) return []
   return [
     {
       text: '上一页',

@@ -4,13 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "run-p type-check \"build-only {@}\" --",
+    "dev": "vite --mode development --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "node scripts/build.mjs",
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build --force",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore",
-    "prepare": "husky install"
+    "prepare": "husky install",
+    "lint:check": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --ignore-path .gitignore",
+    "build:development": "npm run type-check && vite build --mode development",
+    "build:test": "npm run type-check && vite build --mode test",
+    "build:production": "npm run type-check && vite build --mode production",
+    "test": "node --test scripts/embed.test.mjs"
   },
   "author": "pipipi_pikachu@163.com",
   "homepage": "https://github.com/pipipi-pikachu/PPTist",

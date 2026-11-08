@@ -645,7 +645,7 @@ export default () => {
   }
 
   // 导入PPTX文件
-  const importPPTXFile = (files: FileList | File[], options?: { cover?: boolean; fixedViewport?: boolean }) => {
+  const importPPTXFile = async (files: FileList | File[], options?: { cover?: boolean; fixedViewport?: boolean }) => {
     const defaultOptions = {
       cover: false,
       fixedViewport: false, 
@@ -653,7 +653,8 @@ export default () => {
     const { cover, fixedViewport } = { ...defaultOptions, ...options }
 
     const file = files[0]
-    if (!file) return
+    if (!file) throw new Error('请选择 PPTX 文件')
+    if (file.size > 100 * 1024 * 1024) throw new Error('PPTX 不能超过 100 MB')
 
     exporting.value = true
 
@@ -662,11 +663,10 @@ export default () => {
       shapeList.push(...item.children)
     }
     
-    const reader = new FileReader()
-    reader.onload = async e => {
+    try {
       let json = null
       try {
-        json = await parse(e.target!.result as ArrayBuffer, {
+        json = await parse(await file.arrayBuffer(), {
           imageMode: 'base64',
           videoMode: 'blob',
           audioMode: 'blob',
@@ -675,9 +675,10 @@ export default () => {
       }
       catch {
         exporting.value = false
-        message.error('无法正确读取 / 解析该文件')
-        return
+        throw new Error('无法正确读取 / 解析该文件')
       }
+
+      if (!json.slides?.length || json.slides.length > 200) throw new Error('课件需包含 1–200 页')
 
       if (json.usedFonts && json.usedFonts.length) loadGoogleFonts(json.usedFonts)
 
@@ -692,6 +693,7 @@ export default () => {
 
       slidesStore.setTheme({ themeColors: json.themeColors })
 
+      let unsupportedMediaCount = 0
       const slides: Slide[] = []
       for (const item of json.slides) {
         const { type, value } = item.fill
@@ -885,6 +887,9 @@ export default () => {
                 fixedRatio: true,
                 rotate: 0,
               })
+            }
+            else if ((el.type === 'audio' || el.type === 'video') && !el.blob) {
+              unsupportedMediaCount += 1
             }
             else if (el.type === 'audio' && el.blob) {
               slide.elements.push({
@@ -1367,8 +1372,11 @@ export default () => {
       else addSlidesFromData(slides)
 
       exporting.value = false
+      return { unsupportedMediaCount }
     }
-    reader.readAsArrayBuffer(file)
+    finally {
+      exporting.value = false
+    }
   }
 
   return {

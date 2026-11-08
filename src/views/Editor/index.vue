@@ -1,7 +1,7 @@
 <template>
   <div class="pptist-editor">
-    <EditorHeader class="layout-header" />
-    <div class="layout-content">
+    <EditorHeader v-if="!embedded" class="layout-header" />
+    <div class="layout-content" :style="embedded ? { height: '100%' } : {}">
       <Thumbnails class="layout-content-left" />
       <div class="layout-content-center">
         <CanvasTool class="center-top" />
@@ -21,7 +21,7 @@
   <NotesPanel v-if="showNotesPanel" />
   <MarkupPanel v-if="showMarkupPanel" />
   <SymbolPanel v-if="showSymbolPanel" />
-  <ImageLibPanel v-if="showImageLibPanel" />
+  <ImageLibPanel v-if="!embedded && showImageLibPanel" />
   <ChartDataEditorDialog />
   <LatexEditorDialog />
 
@@ -34,7 +34,7 @@
   </Modal>
 
   <Modal
-    :visible="!!showAIPPTDialog" 
+    :visible="!embedded && !!showAIPPTDialog"
     :width="720"
     :closeOnClickMask="false"
     :closeOnEsc="false"
@@ -47,6 +47,7 @@
 </template>
 
 <script lang="ts" setup>
+import { embedded } from '@/embed/bridge'
 import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useMainStore } from '@/store'

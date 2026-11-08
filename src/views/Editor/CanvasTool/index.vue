@@ -70,7 +70,7 @@
             <FileInput @change="files => { insertImageElement(files); imageMenuVisible = false }">
               <PopoverMenuItem center><i-icon-park-outline:upload class="icon" /> 上传图片</PopoverMenuItem>
             </FileInput>
-            <PopoverMenuItem center @click="openImageLibPanel(); imageMenuVisible = false"><i-icon-park-outline:picture class="icon" /> 在线图库</PopoverMenuItem>
+            <PopoverMenuItem v-if="!embedded" center @click="openImageLibPanel(); imageMenuVisible = false"><i-icon-park-outline:picture class="icon" /> 在线图库</PopoverMenuItem>
           </template>
           <span class="arrow"><i-icon-park-outline:down /></span>
         </Popover>
@@ -169,6 +169,7 @@
 </template>
 
 <script lang="ts" setup>
+import { embedded } from '@/embed/bridge'
 import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useMainStore, useSlidesStore, useSnapshotStore } from '@/store'

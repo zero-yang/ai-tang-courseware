@@ -17,7 +17,7 @@
             <div class="import-label">导入文件</div>
             <div class="import-grid">
               <FileInput class="import-block" accept="application/vnd.openxmlformats-officedocument.presentationml.presentation" @change="files => {
-                importPPTXFile(files)
+                importPPTXFile(files).catch(error => message.error(error.message || '导入失败'))
                 mainMenuVisible = false
               }">
                 <span class="icon"><i-custom:file-ppt /></span>
@@ -111,6 +111,7 @@
 </template>
 
 <script lang="ts" setup>
+import message from '@/utils/message'
 import { nextTick, ref, useTemplateRef } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useMainStore, useSlidesStore } from '@/store'

@@ -124,7 +124,7 @@
     </ButtonGroup>
 
     <ButtonGroup class="row" passive>
-      <Popover trigger="click" v-model:value="AIPopoverVisible" style="width: 25%;">
+      <Popover v-if="!embedded" trigger="click" v-model:value="AIPopoverVisible" style="width: 25%;">
         <template #content>
           <PopoverMenuItem center @click="execAI('美化改写')">美化</PopoverMenuItem>
           <PopoverMenuItem center @click="execAI('扩写丰富')">扩写</PopoverMenuItem>
@@ -258,6 +258,7 @@
 </template>
 
 <script lang="ts" setup>
+import { embedded } from '@/embed/bridge'
 import { ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import api from '@/services'

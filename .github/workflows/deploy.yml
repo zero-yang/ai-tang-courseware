@@ -21,6 +21,8 @@ jobs:
         run: npm ci
 
       - name: Build
+        env:
+          AI_TANG_BUILD_MODE: production
         run: npm run build
 
       - name: Deploy to github pages
