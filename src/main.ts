@@ -10,6 +10,9 @@ import '@/assets/styles/font.scss'
 
 import Directive from '@/directive'
 
+// eslint-disable-next-line no-console -- Build mode is a browser startup diagnostic.
+console.info(`[courseware] Build mode: ${import.meta.env.MODE}`)
+
 const app = createApp(App)
 app.use(Directive)
 app.use(createPinia())

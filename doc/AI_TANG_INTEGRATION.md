@@ -1,7 +1,8 @@
 # AI Tang iframe 接入
 
 本项目提供编辑与播放两种嵌入模式，入口查询参数为 `embed=edit|play`、`parentOrigin`、`instanceId`。
-课程 ID、课件 ID 和短期凭证通过来源受限的 postMessage 握手提供。直接访问嵌入地址不授予接口权限。
+课程 ID、课件 ID 和短期凭证通过来源受限的 postMessage 握手提供。构建产物直接打开时只显示访问限制提示，
+独立编辑器仅在本地开发服务器中开放。
 API 由 AI Tang 后端提供，源代码见相邻 ai_tang 仓库的 courseware 模块；完整流程、协议与部署说明见
 `ai_tang/docs/courseware.md`。
 
@@ -15,9 +16,11 @@ API 由 AI Tang 后端提供，源代码见相邻 ai_tang 仓库的 courseware �
 
 `.env.<mode>` 配置 API 和父页面白名单，`.env.<mode>.local` 或部署变量覆盖默认值。
 测试域名 `courseware.test.rgznst.com`，生产域名 `courseware.rgznst.com`。
-构建输出 `_headers`；托管平台需实际应用其中的 CSP frame-ancestors，或配置等价响应头规则。
+EdgeOne 测试环境使用 `AI_TANG_BUILD_MODE=test`。排查父页面被拒绝时，核对课件控制台的构建模式和部署时生效的
+`VITE_PARENT_ORIGINS`，其测试环境值应为 `https://admin.test.rgznst.com`。构建输出 `_headers`，托管平台需应用
+其中对应环境的 CSP `frame-ancestors` 或配置等价响应头规则。
 
-嵌入模式不会调用 PPTist 上游 AI/图片服务。独立演示模式如需这些功能，必须显式配置
+嵌入模式不会调用 PPTist 上游 AI/图片服务。本地独立演示模式如需这些功能，必须显式配置
 `VITE_PPTIST_SERVICE_URL`；默认不配置外部服务。
 
 ## 验收样例

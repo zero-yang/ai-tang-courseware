@@ -1,5 +1,5 @@
 <template>
-  <EmbedApp v-if="embedded" />
+  <EmbedApp v-if="!standalone" />
   <template v-else-if="slides.length">
     <Screen v-if="screening" />
     <Editor v-else-if="_isPC" />
@@ -26,6 +26,7 @@ import Mobile from './views/Mobile/index.vue'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
 
 const _isPC = isPC()
+const standalone = import.meta.env.DEV && !embedded && window.parent === window
 
 const mainStore = useMainStore()
 const slidesStore = useSlidesStore()
@@ -37,12 +38,8 @@ const { screening } = storeToRefs(screenStore)
 
 const isAudienceMode = new URLSearchParams(window.location.search).get('mode') === 'audience'
 
-if (!embedded && import.meta.env.MODE !== 'development') {
-  window.onbeforeunload = () => false
-}
-
 onMounted(async () => {
-  if (embedded) return
+  if (!standalone) return
   if (isAudienceMode) {
     slidesStore.setSlides([{
       id: nanoid(10),
