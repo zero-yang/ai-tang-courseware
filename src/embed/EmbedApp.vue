@@ -1,34 +1,51 @@
 <template>
-  <div class="embedded-app">
+  <div class="embedded-app" :inert="!!loadingTip">
     <div v-if="!readOnly && initialized" class="embedded-toolbar">
-      <input v-model="slidesStore.title" aria-label="课件名称" maxlength="200" :disabled="busy" />
-      <label class="import-button">导入 PPTX<input type="file" accept=".pptx" :disabled="busy" @change="importFile" /></label>
+      <input v-model="slidesStore.title" aria-label="课件名称" maxlength="200" :disabled="busy || !!pendingAnimation" />
+      <label class="import-button">导入 PPTX<input type="file" accept=".pptx" :disabled="busy || !!pendingAnimation" @change="importFile" /></label>
+      <button :disabled="busy || !!pendingAnimation" @click="exportDocument">导出课件 JSON</button>
+      <label class="import-button">导入动画变更<input type="file" accept=".json" :disabled="busy || !!pendingAnimation" @change="importAnimations" /></label>
+      <button :disabled="busy" @click="downloadGuide">GPT 提示词与示例</button>
+      <button :disabled="busy" @click="downloadSkill">下载 GPT 动画 Skill</button>
       <button :disabled="busy" @click="preview">预览</button>
-      <button :disabled="busy" @click="save(false)">保存</button>
-      <button :disabled="busy" @click="save(true)">保存并返回</button>
+      <button :disabled="busy || !!pendingAnimation" @click="save(false)">保存</button>
+      <button :disabled="busy || !!pendingAnimation" @click="save(true)">保存并返回</button>
       <span>{{ busy ? '处理中…' : dirty ? '未保存' : '已保存' }}</span>
+    </div>
+    <div v-if="pendingAnimation" class="import-notice">
+      动画已校验，请预览后确认保存。
+      <button :disabled="busy" @click="preview">预览动画</button>
+      <button :disabled="busy || !animationPreviewed" @click="save(false)">确认保存动画</button>
+      <button :disabled="busy" @click="cancelAnimations">取消变更</button>
     </div>
     <div v-if="importNotice" role="status" class="import-notice">{{ importNotice }}</div>
     <div v-if="error" role="alert" class="embed-error">{{ error }}</div>
-    <div v-if="!initialized" class="embed-loading">{{ error ? '请返回管理端重试' : '正在连接管理端并加载课件…' }}</div>
-    <div v-else class="embedded-content" :class="{ busy }">
+    <div v-if="!initialized && error" class="embed-loading">请返回管理端重试</div>
+    <div v-if="initialized" class="embedded-content">
       <Screen v-if="screening" />
-      <Editor v-else-if="!readOnly" />
+      <Editor v-else-if="!readOnly && !pendingAnimation" />
     </div>
   </div>
+  <FullscreenSpin class="embed-loading-mask" :loading="!!loadingTip" :tip="loadingTip" />
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { saveAs } from 'file-saver'
+import animationSkill from '../../.agents/skills/courseware-animation/SKILL.md?raw'
+import { applyAnimations, effects, fingerprint, prompt } from './animationExchange'
 import { nanoid } from 'nanoid'
 import { useSlidesStore, useScreenStore, useSnapshotStore } from '@/store'
 import useImport from '@/hooks/useImport'
+import useHistorySnapshot from '@/hooks/useHistorySnapshot'
 import useScreening from '@/hooks/useScreening'
+import FullscreenSpin from '@/components/FullscreenSpin.vue'
 import Editor from '@/views/Editor/index.vue'
 import Screen from '@/views/Screen/index.vue'
 import { bridgeAllowed, readOnly, send, subscribe } from './bridge'
 import { api, getToken, requestCourse, MediaSession, type CoursewareDocument, type SavedCourseware } from './api'
 
+const { addHistorySnapshot } = useHistorySnapshot()
 const slidesStore = useSlidesStore()
 const screenStore = useScreenStore()
 const snapshotStore = useSnapshotStore()
@@ -36,10 +53,14 @@ const { importPPTXFile } = useImport()
 const { enterScreening } = useScreening()
 const screening = computed(() => screenStore.screening)
 const initialized = ref(false)
-const busy = ref(false)
 const error = ref('')
+const operationTip = ref('')
+const busy = computed(() => !!operationTip.value)
+const loadingTip = computed(() => operationTip.value || (!initialized.value && !error.value ? '正在连接管理端并加载课件…' : ''))
 const importNotice = ref('')
 const savedSnapshot = ref('')
+const pendingAnimation = ref<CoursewareDocument>()
+const animationPreviewed = ref(false)
 let courseId = ''
 let coursewareId: string | undefined
 let revision: number | undefined
@@ -119,7 +140,7 @@ async function importFile(event: Event) {
     failure(new Error('请选择不超过 100 MB 的 PPTX 文件')); return
   }
   if ((coursewareId || dirty.value && slidesStore.slides.some(slide => slide.elements.length)) && !window.confirm('导入将替换当前课件内容，是否继续？')) return
-  busy.value = true
+  operationTip.value = '正在导入 PPTX…'
   error.value = ''
   const before = JSON.parse(snapshot.value) as CoursewareDocument
   try {
@@ -135,15 +156,72 @@ async function importFile(event: Event) {
     failure(cause)
   }
   finally {
-    busy.value = false
+    operationTip.value = ''
   }
 }
 function preview() {
+  if (pendingAnimation.value) animationPreviewed.value = true
   enterScreening()
 }
+function downloadGuide() {
+  saveAs(new Blob([prompt], { type: 'text/plain;charset=utf-8' }), 'GPT动画提示词与示例.txt')
+}
+function downloadSkill() {
+  saveAs(new Blob([animationSkill], { type: 'text/markdown;charset=utf-8' }), 'SKILL.md')
+}
+function stableDocument() {
+  if (!coursewareId || dirty.value || !media) throw new Error('请先保存当前课件，再导出或导入动画变更')
+  return media.persist(JSON.parse(snapshot.value))
+}
+async function exportDocument() {
+  if (busy.value || pendingAnimation.value) return
+  operationTip.value = '正在导出课件…'
+  error.value = ''
+  try {
+    const document = await stableDocument()
+    const data = { base_id: await fingerprint(document), document, allowed_effects: effects, instructions: prompt }
+    saveAs(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), '课件.json')
+  }
+  catch (cause) {
+    failure(cause)
+  }
+  finally {
+    operationTip.value = ''
+  }
+}
+async function importAnimations(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || busy.value || pendingAnimation.value) return
+  operationTip.value = '正在校验动画变更…'
+  error.value = ''
+  try {
+    if (file.size > 5 * 1024 * 1024) throw new Error('动画变更文件不能超过 5 MB')
+    const document = await stableDocument()
+    const before = JSON.parse(snapshot.value) as CoursewareDocument
+    const updated = applyAnimations(JSON.parse(await file.text()), await fingerprint(document), before)
+    pendingAnimation.value = before
+    animationPreviewed.value = false
+    slidesStore.setSlides(updated.slides, updated.theme)
+    slidesStore.updateSlideIndex(0)
+  }
+  catch (cause) {
+    failure(cause)
+  }
+  finally {
+    operationTip.value = ''
+  }
+}
+function cancelAnimations() {
+  if (!pendingAnimation.value || busy.value) return
+  slidesStore.setSlides(pendingAnimation.value.slides, pendingAnimation.value.theme)
+  pendingAnimation.value = undefined
+  animationPreviewed.value = false
+}
 async function save(returnAfterSave: boolean) {
-  if (busy.value || readOnly) return
-  busy.value = true
+  if (busy.value || readOnly || pendingAnimation.value && !animationPreviewed.value) return
+  operationTip.value = '正在保存课件…'
   error.value = ''
   try {
     if (!slidesStore.title.trim()) throw new Error('请输入课件名称')
@@ -166,6 +244,8 @@ async function save(returnAfterSave: boolean) {
     })).json()
     coursewareId = result.id
     revision = result.revision
+    if (pendingAnimation.value) addHistorySnapshot()
+    pendingAnimation.value = undefined
     savedSnapshot.value = captured
     send('SAVED', { coursewareId, revision, returnAfterSave: returnAfterSave && !dirty.value, dirty: dirty.value })
   }
@@ -173,13 +253,18 @@ async function save(returnAfterSave: boolean) {
     failure(cause)
   }
   finally {
-    busy.value = false
+    operationTip.value = ''
   }
 }
 const dispose = subscribe(message => {
   if (message.type === 'INIT') void initialize(message.payload)
 })
 let helloTimer = 0
+function blockEditorInput(event: Event) {
+  if (!busy.value) return
+  event.preventDefault()
+  event.stopPropagation()
+}
 function beforeUnload(event: BeforeUnloadEvent) {
   if (dirty.value) {
     event.preventDefault(); event.returnValue = ''
@@ -193,6 +278,8 @@ onMounted(() => {
   helloTimer = window.setInterval(() => {
     if (!starting) send('INIT_REQUEST')
   }, 1000)
+  document.addEventListener('keydown', blockEditorInput, true)
+  document.addEventListener('paste', blockEditorInput, true)
   window.addEventListener('beforeunload', beforeUnload)
 })
 onUnmounted(() => {
@@ -201,18 +288,20 @@ onUnmounted(() => {
   clearInterval(helloTimer)
   clearInterval(refreshTimer)
   media?.dispose()
+  document.removeEventListener('keydown', blockEditorInput, true)
+  document.removeEventListener('paste', blockEditorInput, true)
   window.removeEventListener('beforeunload', beforeUnload)
 })
 </script>
 
 <style scoped>
 .embedded-app { height: 100%; display: flex; flex-direction: column; background: #fff; }
-.embedded-toolbar { display: flex; gap: 10px; align-items: center; padding: 10px; border-bottom: 1px solid #ddd; font-size: 13px; }
+.embedded-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px; border-bottom: 1px solid #ddd; font-size: 13px; }
 .embedded-toolbar > input { min-width: 100px; flex: 1; padding: 7px; border: 1px solid #ccc; border-radius: 4px; }
 .embedded-toolbar button, .import-button { padding: 7px 12px; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; background: #fff; white-space: nowrap; }
 .import-button input { display: none; }
 .embedded-content { flex: 1; min-height: 0; }
-.embedded-content.busy { pointer-events: none; opacity: .7; }
+.embed-loading-mask { z-index: 10000; cursor: wait; }
 .embed-loading { margin: auto; color: #666; }
 .import-notice { padding: 8px 10px; color: #7a4b00; background: #fffbe6; font-size: 13px; }
 .embed-error { padding: 10px; color: #b42318; background: #fff1f0; }

@@ -153,3 +153,26 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
     globalThis.fetch = originalFetch 
   }
 })
+
+test('animation exchange validates atomically and preserves media and layout', async () => {
+  const built = await build({ entryPoints: ['src/embed/animationExchange.ts'], alias: { '@': './src' }, bundle: true, write: false, platform: 'node', format: 'esm' })
+  const { applyAnimations, fingerprint } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`)
+  const document = { format_version: 1, title: '示例', width: 1000, height: 562.5, theme: {}, slides: [
+    { id: 'page1', elements: [{ id: 'image1', src: 'asset:123', left: 20 }, { id: 'video1', src: 'https://example.com/video.mp4' }] },
+  ] }
+  const animation = { id: 'a1', elId: 'image1', type: 'in', effect: 'fadeIn', duration: 1000, trigger: 'click' }
+  const patch = { format_version: 1, base_id: 'base', changes: [{ slide_id: 'page1', animations: [animation] }] }
+  const result = applyAnimations(patch, 'base', document)
+  assert.deepEqual(result.slides[0].elements, document.slides[0].elements)
+  assert.equal(document.slides[0].animations, undefined)
+  assert.deepEqual(result.slides[0].animations, [animation])
+  assert.throws(() => applyAnimations(patch, 'different', document))
+  for (const invalid of [{ elId: 'missing' }, { effect: 'unknown' }, { duration: -1 }, { trigger: 'auto' }, { src: 'changed' }]) {
+    assert.throws(() => applyAnimations({ ...patch, changes: [{ slide_id: 'page1', animations: [{ ...animation, ...invalid }] }] }, 'base', document))
+  }
+  assert.throws(() => applyAnimations({ ...patch, changes: [...patch.changes, { slide_id: 'missing', animations: [] }] }, 'base', document))
+  assert.equal(document.slides[0].animations, undefined)
+  assert.deepEqual(applyAnimations({ ...patch, changes: [{ slide_id: 'page1', animations: [] }] }, 'base', result).slides[0].animations, [])
+  assert.equal(await fingerprint(document), await fingerprint({ ...document, theme: {} }))
+  assert.notEqual(await fingerprint(document), await fingerprint(result))
+})

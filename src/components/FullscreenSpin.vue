@@ -1,7 +1,7 @@
 <template>
-  <div class="fullscreen-spin" :class="{ 'mask': mask }" v-if="loading">
+  <div class="fullscreen-spin" :class="{ 'mask': mask }" v-if="loading" role="status">
     <div class="spin">
-      <div class="spinner"></div>
+      <div class="spinner" aria-hidden="true"></div>
       <div class="text">{{tip}}</div>
     </div>
   </div>
