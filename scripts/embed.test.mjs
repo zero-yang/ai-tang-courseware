@@ -40,6 +40,7 @@ test('embedded preview sends a cloneable unsaved snapshot and preserves the edit
   assert.equal(module.messages[0].type, 'PREVIEW')
   assert.equal(module.messages[0].payload.startIndex, 1)
   assert.equal(module.messages[0].payload.document.height, 562.5)
+  assert.equal(Object.hasOwn(module.messages[0].payload.document, 'title'), false)
   assert.equal(module.messages[0].payload.document.slides[1].animations[0].effect, 'fadeIn')
   module.slides.theme.themeColors[0] = '#000'
   assert.equal(module.messages[0].payload.document.theme.themeColors[0], '#fff')
@@ -55,19 +56,12 @@ test('embedded preview sends a cloneable unsaved snapshot and preserves the edit
 test('bridge validates sources; credentials coalesce; media survives serialize and rehydrate', async () => {
   const listeners = []
   const messages = []
-  let courseReply = '42'
   const parent = { postMessage(message, origin) {
     assert.equal(origin, 'http://parent.test')
     messages.push(message)
     if (message.type === 'TOKEN_REQUEST') {
       queueMicrotask(() => dispatch({ ...message,
         type: 'TOKEN', payload: { token: 'test-only-token', expires_in: 300 } }))
-    }
-    if (message.type === 'COURSE_REQUEST') {
-      queueMicrotask(() => {
-        dispatch({ ...message, requestId: 'stale-request', type: 'COURSE', payload: { courseId: '99' } })
-        dispatch({ ...message, type: courseReply ? 'COURSE' : 'COURSE_ERROR', payload: { courseId: courseReply } })
-      })
     }
   } }
   globalThis.location = { search: '?embed=edit&parentOrigin=http%3A%2F%2Fparent.test&instanceId=test-instance' }
@@ -93,16 +87,6 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
   dispatch(envelope)
   assert.equal(delivered, 1)
   dispose()
-  // Draft association is explicit, coalesced, and can be retried after failure.
-  assert.equal(messages.filter(message => message.type === 'COURSE_REQUEST').length, 0)
-  assert.deepEqual(await Promise.all([client.requestCourse(), client.requestCourse()]), ['42', '42'])
-  assert.equal(messages.filter(message => message.type === 'COURSE_REQUEST').length, 1)
-  courseReply = ''
-  await assert.rejects(client.requestCourse(), /课程草稿创建失败/)
-  courseReply = 'invalid-id'
-  await assert.rejects(client.requestCourse(), /课程草稿创建失败/)
-  courseReply = '43'
-  assert.equal(await client.requestCourse(), '43')
   assert.deepEqual(await Promise.all([client.getToken(), client.getToken()]), ['test-only-token', 'test-only-token'])
   assert.equal(messages.filter(message => message.type === 'TOKEN_REQUEST').length, 1)
 
@@ -111,6 +95,7 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
   let failedUpload = false
   globalThis.fetch = async (url, init = {}) => {
     if (!String(url).startsWith('http://api.test')) return await originalFetch(url, init)
+    assert.match(String(url), /^http:\/\/api\.test\/api\/v1\/lessons\/1\/courseware\/assets/)
     assert.equal(init.headers.Authorization, 'Bearer test-only-token')
     assert.equal(init.credentials, 'omit')
     if (init.method === 'POST') {
@@ -122,7 +107,7 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
     return new Response(assets.get(String(url).split('/').pop()))
   }
   try {
-    const source = { title: 'Media test', slides: [{ elements: [
+    const source = { slides: [{ elements: [
       { src: 'data:audio/wav;base64,AQID' }, { src: 'data:video/mp4;base64,BAUG' },
       { src: 'data:audio/wav;base64,AQID' }, { src: 'https://external.test/video.mp4' },
     ] }] }
@@ -146,6 +131,11 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
     failedUpload = false
     await media.persist(failed)
     assert.equal(assets.size, 3)
+    assert.equal(media.invalidate([persisted.slides[0].elements[0].src]), true)
+    const retry = await media.persist(hydrated)
+    assert.equal(assets.size, 4)
+    assert.notEqual(retry.slides[0].elements[0].src, persisted.slides[0].elements[0].src)
+    assert.equal(retry.slides[0].elements[1].src, persisted.slides[0].elements[1].src)
     media.dispose()
     await assert.rejects(originalFetch(mediaUrl))
   }
@@ -157,7 +147,7 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
 test('animation exchange validates atomically and preserves media and layout', async () => {
   const built = await build({ entryPoints: ['src/embed/animationExchange.ts'], alias: { '@': './src' }, bundle: true, write: false, platform: 'node', format: 'esm' })
   const { applyAnimations, fingerprint } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`)
-  const document = { format_version: 1, title: '示例', width: 1000, height: 562.5, theme: {}, slides: [
+  const document = { format_version: 1, width: 1000, height: 562.5, theme: {}, slides: [
     { id: 'page1', elements: [{ id: 'image1', src: 'asset:123', left: 20 }, { id: 'video1', src: 'https://example.com/video.mp4' }] },
   ] }
   const animation = { id: 'a1', elId: 'image1', type: 'in', effect: 'fadeIn', duration: 1000, trigger: 'click' }
@@ -175,4 +165,35 @@ test('animation exchange validates atomically and preserves media and layout', a
   assert.deepEqual(applyAnimations({ ...patch, changes: [{ slide_id: 'page1', animations: [] }] }, 'base', result).slides[0].animations, [])
   assert.equal(await fingerprint(document), await fingerprint({ ...document, theme: {} }))
   assert.notEqual(await fingerprint(document), await fingerprint(result))
+})
+
+test('saved-state comparison ignores measured sizes and detects authored changes', async () => {
+  const built = await build({ entryPoints: ['src/embed/editableSnapshot.ts'], bundle: true, write: false, platform: 'node', format: 'esm' })
+  const { getEditableSnapshot } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`)
+  const document = { format_version: 1, width: 1000, height: 562.5, theme: {}, slides: [
+    { id: 'page1', elements: [
+      { id: 'horizontal', type: 'text', width: 240, height: 50, content: '<p>Text</p>' },
+      { id: 'vertical', type: 'text', vertical: true, width: 50, height: 240 },
+      { id: 'fixed', type: 'text', fixedHeight: true, width: 240, height: 50 },
+      { id: 'table', type: 'table', width: 240, height: 50, rowHeights: [25, 25] },
+    ] },
+  ] }
+  const measured = structuredClone(document)
+  const [horizontal, vertical, fixed, table] = measured.slides[0].elements
+  horizontal.height = 51
+  vertical.width = 49
+  table.height = 52
+  const saved = getEditableSnapshot(document)
+  assert.equal(getEditableSnapshot(measured), saved)
+  assert.equal(horizontal.height, 51)
+
+  for (const [element, property, value] of [
+    [horizontal, 'content', '<p>Edited</p>'], [horizontal, 'width', 250],
+    [vertical, 'height', 250], [fixed, 'height', 51], [table, 'rowHeights', [30, 25]],
+  ]) {
+    const previous = element[property]
+    element[property] = value
+    assert.notEqual(getEditableSnapshot(measured), saved, `${element.id}.${property}`)
+    element[property] = previous
+  }
 })

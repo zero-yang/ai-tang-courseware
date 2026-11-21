@@ -15,18 +15,20 @@ import 'tippy.js/animations/scale.css'
 
 const props = withDefaults(defineProps<{
   value?: boolean
-  trigger?: 'click' | 'mouseenter' | 'manual'
+  trigger?: 'click' | 'mouseenter' | 'mouseenter focusin' | 'manual'
   placement?: Placement
   appendTo?: HTMLElement | 'parent'
   contentStyle?: CSSProperties
   center?: boolean
   offset?: number
+  hideOnClick?: boolean
 }>(), {
   value: false,
   trigger: 'click',
   placement: 'bottom',
   center: false,
   offset: 8,
+  hideOnClick: true,
 })
 
 const emit = defineEmits<{
@@ -61,6 +63,7 @@ onMounted(() => {
     trigger: props.trigger,
     placement: props.placement,
     interactive: true,
+    hideOnClick: props.hideOnClick,
     appendTo: props.appendTo || document.body,
     maxWidth: 'none',
     offset: [0, props.offset],

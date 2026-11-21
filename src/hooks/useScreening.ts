@@ -9,7 +9,7 @@ export default () => {
   // 进入放映状态（从当前页开始）
   const enterScreening = () => {
     if (embedded && !readOnly) {
-      send('PREVIEW', { document: JSON.parse(JSON.stringify({ format_version: 1, title: slidesStore.title,
+      send('PREVIEW', { document: JSON.parse(JSON.stringify({ format_version: 1,
         width: slidesStore.viewportSize, height: slidesStore.viewportSize * slidesStore.viewportRatio,
         theme: slidesStore.theme, slides: slidesStore.slides })),
       startIndex: slidesStore.slideIndex })

@@ -1,36 +1,93 @@
 <template>
-  <div class="embedded-app" :inert="!!loadingTip">
-    <div v-if="!readOnly && initialized" class="embedded-toolbar">
-      <input v-model="slidesStore.title" aria-label="课件名称" maxlength="200" :disabled="busy || !!pendingAnimation" />
-      <label class="import-button">导入 PPTX<input type="file" accept=".pptx" :disabled="busy || !!pendingAnimation" @change="importFile" /></label>
-      <button :disabled="busy || !!pendingAnimation" @click="exportDocument">导出课件 JSON</button>
-      <label class="import-button">导入动画变更<input type="file" accept=".json" :disabled="busy || !!pendingAnimation" @change="importAnimations" /></label>
-      <button :disabled="busy" @click="downloadGuide">GPT 提示词与示例</button>
-      <button :disabled="busy" @click="downloadSkill">下载 GPT 动画 Skill</button>
-      <button :disabled="busy" @click="preview">预览</button>
-      <button :disabled="busy || !!pendingAnimation" @click="save(false)">保存</button>
-      <button :disabled="busy || !!pendingAnimation" @click="save(true)">保存并返回</button>
-      <span>{{ busy ? '处理中…' : dirty ? '未保存' : '已保存' }}</span>
-    </div>
-    <div v-if="pendingAnimation" class="import-notice">
-      动画已校验，请预览后确认保存。
-      <button :disabled="busy" @click="preview">预览动画</button>
-      <button :disabled="busy || !animationPreviewed" @click="save(false)">确认保存动画</button>
-      <button :disabled="busy" @click="cancelAnimations">取消变更</button>
+  <div class="embedded-app" :inert="busy || !!savingVersion">
+    <header v-if="!readOnly" class="editor-header">
+      <div class="editor-heading">
+        <button type="button" class="text-button editor-back" @click="send('RETURN_REQUEST')">‹ 返回</button>
+        <div class="editor-brand"><span aria-hidden="true">Ai</span><strong>课件编辑</strong></div>
+        <div v-if="initialized" class="editor-document">
+          <strong class="editor-document-title" :title="heading">{{ heading }}</strong>
+          <span>{{ version ? `${historical ? '正在编辑' : '当前版本'} ${formatVersion(version)}` : '待保存 v1.0' }} ｜ 已保留 {{ versionCount }}/3 个版本</span>
+        </div>
+      </div>
+      <div v-if="initialized" class="editor-actions">
+        <span class="editor-status" role="status">{{ statusLabel }}</span>
+        <button type="button" class="text-button" :disabled="busy" @click="enterScreening">预览</button>
+        <button type="button" class="editor-button save-button" :disabled="!canSaveCurrent" @click="void save('current')">保存</button>
+        <span class="version-action" :tabindex="versionCount >= 3 ? 0 : undefined" :aria-describedby="versionCount >= 3 ? 'version-limit' : undefined">
+          <button type="button" class="editor-button new-version-button" :disabled="!canSaveVersion" @click="void save('version')">另存为新版本</button>
+          <span v-if="versionCount >= 3" id="version-limit" role="tooltip" class="version-limit">已达到 3 个版本上限，无法另存为新版本。你可保存当前版本。</span>
+        </span>
+      </div>
+    </header>
+    <div v-if="!readOnly && initialized" class="file-toolbar">
+      <button type="button" class="editor-button" :disabled="busy" @click="pptxInput?.click()">导入 PPTX</button>
+      <input ref="pptxInput" type="file" accept=".pptx" hidden @change="importFile" />
+      <button type="button" class="editor-button" :disabled="busy" @click="exportDocument">导出 JSON</button>
+      <span class="file-divider" aria-hidden="true"></span>
+      <button type="button" class="editor-button animation-import-button" :disabled="busy" @click="animationInput?.click()">导入动画变更</button>
+      <input ref="animationInput" type="file" accept=".json" hidden @change="importAnimations" />
+      <div class="prompt-action">
+        <Popover trigger="mouseenter focusin" placement="bottom-start" append-to="parent" :offset="0" :hide-on-click="false">
+          <button type="button" class="editor-button" :disabled="busy">GPT提示词与示例</button>
+          <template #content>
+            <section class="prompt-panel" aria-labelledby="animation-prompt-title" @keydown.stop @keyup.stop>
+              <div class="prompt-panel-heading">
+                <strong id="animation-prompt-title">GPT提示词与示例</strong>
+                <button type="button" class="editor-button" @click="copyPrompt">复制</button>
+              </div>
+              <pre>{{ prompt }}</pre>
+            </section>
+          </template>
+        </Popover>
+      </div>
+      <button type="button" class="editor-button" :disabled="busy" @click="downloadSkill">下载GPT动画Skill</button>
     </div>
     <div v-if="importNotice" role="status" class="import-notice">{{ importNotice }}</div>
-    <div v-if="error" role="alert" class="embed-error">{{ error }}</div>
+    <div v-if="error && !pendingAnimation" role="alert" class="embed-error">{{ error }}</div>
     <div v-if="!initialized && error" class="embed-loading">请返回管理端重试</div>
-    <div v-if="initialized" class="embedded-content">
+    <div v-if="initialized" class="embedded-content" :class="{ 'embedded-content--editing': !readOnly }">
       <Screen v-if="screening" />
-      <Editor v-else-if="!readOnly && !pendingAnimation" />
+      <Editor v-else-if="!readOnly" />
+    </div>
+    <dialog v-if="!readOnly" ref="animationDialog" class="animation-dialog" aria-labelledby="animation-dialog-title"
+      @cancel.prevent @keydown.stop @keyup.stop @paste.stop>
+      <h2 id="animation-dialog-title">动画已校验，请预览后确认保存。</h2>
+      <p v-if="error" role="alert" class="animation-dialog-error">{{ error }}</p>
+      <div class="animation-dialog-actions">
+        <button type="button" class="animation-dialog-button" autofocus :disabled="busy || !!saveKind" @click="previewAnimations">预览动画</button>
+        <button type="button" class="animation-dialog-button animation-dialog-button--confirm" :disabled="!animationPreviewed || !(historical ? canSaveVersion : canSaveCurrent)"
+          @click="void save(historical ? 'version' : 'current')">{{ saveKind ? '保存中…' : '确认保存动画' }}</button>
+        <button type="button" class="animation-dialog-button" :disabled="busy || !!saveKind" @click="cancelAnimations">取消变更</button>
+      </div>
+    </dialog>
+    <dialog v-if="!readOnly" ref="versionNoteDialog" class="version-note-dialog" aria-labelledby="version-note-title"
+      @close="resolveVersionNote" @keydown.stop @keyup.stop @paste.stop>
+      <form @submit.prevent="confirmVersionNote">
+        <h2 id="version-note-title">另存为新版本</h2>
+        <label for="version-note">更新说明（必填）</label>
+        <textarea id="version-note" v-model="versionNote" rows="4" required autofocus></textarea>
+        <div class="version-note-actions">
+          <button type="button" class="editor-button" @click="versionNoteDialog?.close()">取消</button>
+          <button type="submit" class="editor-button new-version-button" :disabled="!versionNote.trim()">另存为新版本</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+  <FullscreenSpin class="embed-loading-mask" :loading="busy" :tip="operationTip" />
+  <div v-if="savingVersion" class="courseware-loading-overlay courseware-loading-overlay--saving" role="status" aria-live="polite">
+    <div class="courseware-loading-content version-saving-card">
+      <span class="courseware-loading-spinner" aria-hidden="true"></span>
+      <strong class="courseware-loading-title">正在保存为新版本{{ formatVersion(savingVersion) }}，</strong>
+      <span>保存完成前，请勿关闭或刷新页面</span>
     </div>
   </div>
-  <FullscreenSpin class="embed-loading-mask" :loading="!!loadingTip" :tip="loadingTip" />
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import dayjs from 'dayjs'
+import relativeTime from 'dayjs/plugin/relativeTime'
+import 'dayjs/locale/zh-cn'
 import { saveAs } from 'file-saver'
 import animationSkill from '../../.agents/skills/courseware-animation/SKILL.md?raw'
 import { applyAnimations, effects, fingerprint, prompt } from './animationExchange'
@@ -40,11 +97,18 @@ import useImport from '@/hooks/useImport'
 import useHistorySnapshot from '@/hooks/useHistorySnapshot'
 import useScreening from '@/hooks/useScreening'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
+import Popover from '@/components/Popover.vue'
+import { copyText } from '@/utils/clipboard'
+import message from '@/utils/message'
 import Editor from '@/views/Editor/index.vue'
 import Screen from '@/views/Screen/index.vue'
 import { bridgeAllowed, readOnly, send, subscribe } from './bridge'
-import { api, getToken, requestCourse, MediaSession, type CoursewareDocument, type SavedCourseware } from './api'
+import { api, CoursewareApiError, getToken, MediaSession, type CoursewareDocument, type SavedCourseware } from './api'
+import { getEditableSnapshot } from './editableSnapshot'
 
+dayjs.extend(relativeTime)
+
+const emit = defineEmits<{ (event: 'startupComplete'): void }>()
 const { addHistorySnapshot } = useHistorySnapshot()
 const slidesStore = useSlidesStore()
 const screenStore = useScreenStore()
@@ -56,75 +120,134 @@ const initialized = ref(false)
 const error = ref('')
 const operationTip = ref('')
 const busy = computed(() => !!operationTip.value)
-const loadingTip = computed(() => operationTip.value || (!initialized.value && !error.value ? '正在连接管理端并加载课件…' : ''))
 const importNotice = ref('')
-const savedSnapshot = ref('')
+const heading = ref('课件')
+const savedEditableSnapshot = ref('')
 const pendingAnimation = ref<CoursewareDocument>()
 const animationPreviewed = ref(false)
-let courseId = ''
+const animationDialog = ref<HTMLDialogElement>()
+const pptxInput = ref<HTMLInputElement>()
+const animationInput = ref<HTMLInputElement>()
+const version = ref(0)
+const currentVersion = ref(0)
+const versionCount = ref(0)
+const savedAt = ref('')
+const clock = ref(Date.now())
+type SaveKind = 'current' | 'version'
+const saveKind = ref<SaveKind>()
+const savingVersion = ref(0)
+const versionNoteDialog = ref<HTMLDialogElement>()
+const versionNote = ref('')
+const historical = computed(() => !!version.value && version.value !== currentVersion.value)
+const canSaveCurrent = computed(() => initialized.value && !busy.value && !saveKind.value && !historical.value)
+const canSaveVersion = computed(() => initialized.value && !busy.value && !saveKind.value && !!version.value && versionCount.value < 3)
+let lessonId = ''
 let coursewareId: string | undefined
 let revision: number | undefined
 let media: MediaSession | undefined
-let creationKey = crypto.randomUUID()
-let attemptedCreation = ''
+let saveRequest: { body: string; key: string } | undefined
+let pendingSave: Promise<boolean> | undefined
+let finishVersionNote: ((note?: string) => void) | undefined
 let starting = false
 let stopped = false
 let refreshTimer = 0
-const serialize = (): CoursewareDocument => ({ format_version: 1, title: slidesStore.title,
+let clockTimer = 0
+const serialize = (): CoursewareDocument => ({ format_version: 1,
   width: slidesStore.viewportSize, height: slidesStore.viewportSize * slidesStore.viewportRatio,
   theme: slidesStore.theme, slides: slidesStore.slides })
 const snapshot = computed(() => JSON.stringify(serialize()))
-const dirty = computed(() => initialized.value && !readOnly && snapshot.value !== savedSnapshot.value)
-watch(dirty, value => send('DIRTY', { dirty: value }))
+const draftSnapshot = computed(() => pendingAnimation.value ? JSON.stringify(pendingAnimation.value) : snapshot.value)
+const editableSnapshot = computed(() => getEditableSnapshot(serialize()))
+const draftEditableSnapshot = computed(() => pendingAnimation.value ? getEditableSnapshot(pendingAnimation.value) : editableSnapshot.value)
+const dirty = computed(() => initialized.value && !readOnly && draftEditableSnapshot.value !== savedEditableSnapshot.value)
+const statusLabel = computed(() => {
+  if (saveKind.value) return '保存中…'
+  if (editableSnapshot.value !== savedEditableSnapshot.value || !savedAt.value) return '未保存修改'
+  return `已保存·${dayjs(savedAt.value).locale('zh-cn').from(dayjs(clock.value))}`
+})
+watch(() => initialized.value || !!error.value, complete => {
+  if (complete) emit('startupComplete')
+}, { flush: 'post' })
+watch([dirty, saveKind], () => {
+  if (!readOnly) send('EDITOR_STATE', { dirty: dirty.value, saving: !!saveKind.value })
+})
+watch([pendingAnimation, savingVersion], ([draft, saving]) => {
+  const dialog = animationDialog.value
+  if (draft && !saving) dialog?.showModal()
+  else dialog?.close()
+}, { flush: 'post' })
+
+function formatVersion(value: number) {
+  return `v${Math.floor(value / 10)}.${value % 10}`
+}
+
+function applySavedMetadata(result: SavedCourseware) {
+  version.value = result.version_no
+  currentVersion.value = result.current_version_no
+  versionCount.value = result.version_count
+  savedAt.value = result.updated_at
+  clock.value = Date.now()
+  revision = result.revision
+}
+
 function failure(cause: unknown) {
   error.value = cause instanceof Error ? cause.message : '操作失败，请重试'
   send('ERROR', { message: error.value })
 }
 async function initialize(payload: Record<string, unknown>) {
   const previewDocument = readOnly ? payload.previewDocument as CoursewareDocument | undefined : undefined
-  const draft = payload.draft === true && !readOnly && !payload.courseId && !payload.coursewareId
-  if (starting || (!draft && !previewDocument && !/^\d+$/.test(String(payload.courseId))) || (payload.mode === 'play') !== readOnly) return
+  if (starting || (!previewDocument && !/^[1-9]\d*$/.test(String(payload.lessonId))) || (payload.mode === 'play') !== readOnly) return
   starting = true
-  courseId = draft || previewDocument ? '' : String(payload.courseId)
+  lessonId = previewDocument ? '' : String(payload.lessonId)
+  if (!readOnly && typeof payload.lessonName === 'string' && payload.lessonName) {
+    heading.value = `${payload.lessonName}·课件`
+  }
   coursewareId = typeof payload.coursewareId === 'string' ? payload.coursewareId : undefined
-  if (courseId) media = new MediaSession(courseId)
+  if (lessonId) media = new MediaSession(lessonId)
   try {
     if (previewDocument) {
       if (previewDocument.format_version !== 1 || !Array.isArray(previewDocument.slides) || !previewDocument.slides.length
         || previewDocument.slides.length > 200 || !(previewDocument.width > 0) || !(previewDocument.height > 0)) {
         throw new Error('预览数据无效，请返回编辑器重试')
       }
-      slidesStore.setTitle(previewDocument.title)
       slidesStore.setSlides(previewDocument.slides, previewDocument.theme)
       slidesStore.setViewportSize(previewDocument.width)
       slidesStore.setViewportRatio(previewDocument.height / previewDocument.width)
     }
     else if (coursewareId && media) {
       await getToken()
-      const result: SavedCourseware = await (await api(courseId, `/${coursewareId}`)).json()
+      const versionPath = typeof payload.versionNo === 'number' ? `/versions/${payload.versionNo}` : ''
+      const result: SavedCourseware = await (await api(lessonId, `/${coursewareId}${versionPath}`)).json()
+      if (!readOnly && result.version_no !== result.current_version_no && result.version_count >= 3) {
+        send('VERSIONS_CHANGED')
+        throw new Error('已保留 3 个版本，请先返回并删除一个其他旧版本')
+      }
       const document = await media.hydrate(result.document)
       if (stopped) return
-      slidesStore.setTitle(document.title)
       slidesStore.setSlides(document.slides, document.theme)
       slidesStore.setViewportSize(document.width)
       slidesStore.setViewportRatio(document.height / document.width)
-      revision = result.revision
+      applySavedMetadata(result)
     }
     else {
       if (readOnly) throw new Error('请选择已保存的课件')
       slidesStore.setSlides([{ id: nanoid(10), elements: [] }])
-      slidesStore.setTitle('未命名课件')
     }
     const startIndex = Number(payload.startIndex)
     slidesStore.updateSlideIndex(previewDocument && Number.isInteger(startIndex)
       ? Math.max(0, Math.min(startIndex, slidesStore.slides.length - 1)) : 0)
     if (!readOnly) await snapshotStore.initSnapshotDatabase()
-    savedSnapshot.value = coursewareId ? snapshot.value : ''
+    savedEditableSnapshot.value = editableSnapshot.value
     screenStore.setScreening(readOnly)
     initialized.value = true
     send('READY', { pageCount: slidesStore.slides.length, coursewareId })
+    if (!readOnly) {
+      clockTimer = window.setInterval(() => {
+        clock.value = Date.now()
+      }, 1000)
+    }
     refreshTimer = window.setInterval(() => {
-      if (courseId) void getToken().catch(failure)
+      if (lessonId) void getToken().catch(failure)
     }, 240000)
   }
   catch (cause) {
@@ -135,7 +258,7 @@ async function importFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || busy.value) return
+  if (!file || busy.value || pendingAnimation.value) return
   if (!/\.pptx$/i.test(file.name) || file.size > 100 * 1024 * 1024) {
     failure(new Error('请选择不超过 100 MB 的 PPTX 文件')); return
   }
@@ -147,7 +270,6 @@ async function importFile(event: Event) {
     const result = await importPPTXFile([file], { cover: true })
     importNotice.value = 'PPTX 已转换；当前导入不保留原文件的元素动画和翻页切换，可在编辑器中重新设置动画。请核对排版和字体。'
       + (result.unsupportedMediaCount ? `有 ${result.unsupportedMediaCount} 个音视频未能导入，请重新上传。` : '')
-    slidesStore.setTitle(file.name.replace(/\.pptx$/i, ''))
   }
   catch (cause) {
     slidesStore.setSlides(before.slides, before.theme)
@@ -159,12 +281,19 @@ async function importFile(event: Event) {
     operationTip.value = ''
   }
 }
-function preview() {
-  if (pendingAnimation.value) animationPreviewed.value = true
-  enterScreening()
+function previewAnimations() {
+  if (!pendingAnimation.value || busy.value || saveKind.value) return
+  send('PREVIEW', { document: JSON.parse(draftSnapshot.value), startIndex: 0 })
+  animationPreviewed.value = true
 }
-function downloadGuide() {
-  saveAs(new Blob([prompt], { type: 'text/plain;charset=utf-8' }), 'GPT动画提示词与示例.txt')
+async function copyPrompt() {
+  try {
+    await copyText(prompt)
+    message.success('提示词已复制')
+  }
+  catch {
+    message.error('复制失败，请选中文本手动复制')
+  }
 }
 function downloadSkill() {
   saveAs(new Blob([animationSkill], { type: 'text/markdown;charset=utf-8' }), 'SKILL.md')
@@ -200,11 +329,8 @@ async function importAnimations(event: Event) {
     if (file.size > 5 * 1024 * 1024) throw new Error('动画变更文件不能超过 5 MB')
     const document = await stableDocument()
     const before = JSON.parse(snapshot.value) as CoursewareDocument
-    const updated = applyAnimations(JSON.parse(await file.text()), await fingerprint(document), before)
-    pendingAnimation.value = before
+    pendingAnimation.value = applyAnimations(JSON.parse(await file.text()), await fingerprint(document), before)
     animationPreviewed.value = false
-    slidesStore.setSlides(updated.slides, updated.theme)
-    slidesStore.updateSlideIndex(0)
   }
   catch (cause) {
     failure(cause)
@@ -214,59 +340,152 @@ async function importAnimations(event: Event) {
   }
 }
 function cancelAnimations() {
-  if (!pendingAnimation.value || busy.value) return
-  slidesStore.setSlides(pendingAnimation.value.slides, pendingAnimation.value.theme)
+  if (!pendingAnimation.value || busy.value || saveKind.value) return
   pendingAnimation.value = undefined
   animationPreviewed.value = false
-}
-async function save(returnAfterSave: boolean) {
-  if (busy.value || readOnly || pendingAnimation.value && !animationPreviewed.value) return
-  operationTip.value = '正在保存课件…'
   error.value = ''
+}
+function requestVersionNote(): Promise<string | undefined> {
+  const dialog = versionNoteDialog.value
+  if (!dialog || finishVersionNote) return Promise.resolve(undefined)
+  dialog.returnValue = ''
+  dialog.showModal()
+  return new Promise(resolve => {
+    finishVersionNote = resolve
+  })
+}
+
+function confirmVersionNote() {
+  if (versionNote.value.trim()) versionNoteDialog.value?.close('save')
+}
+
+function resolveVersionNote() {
+  const note = versionNoteDialog.value?.returnValue === 'save' ? versionNote.value.trim() : undefined
+  if (!note) versionNote.value = ''
+  const finish = finishVersionNote
+  finishVersionNote = undefined
+  finish?.(note)
+}
+
+async function save(kind: SaveKind): Promise<boolean> {
+  if (readOnly || finishVersionNote || !(kind === 'version' ? canSaveVersion.value : canSaveCurrent.value)) return false
+  if (pendingAnimation.value && !animationPreviewed.value) {
+    failure(new Error('请先预览动画变更，再保存课件'))
+    return false
+  }
+  let changeNote: string | undefined
+  if (kind === 'version') {
+    changeNote = await requestVersionNote()
+    if (!changeNote || stopped || !canSaveVersion.value) return false
+  }
+
+  const captured = draftSnapshot.value
+  const confirmedAnimation = pendingAnimation.value
+  const nextVersion = kind === 'version' ? currentVersion.value + 1 : 0
+  saveKind.value = kind
+  savingVersion.value = nextVersion
+  error.value = ''
+  pendingSave = persistSnapshot(captured, nextVersion, changeNote, confirmedAnimation).finally(() => {
+    pendingSave = undefined
+    savingVersion.value = 0
+    saveKind.value = undefined
+  })
+  return pendingSave
+}
+
+async function persistSnapshot(captured: string, nextVersion: number, changeNote?: string, confirmedAnimation?: CoursewareDocument) {
   try {
-    if (!slidesStore.title.trim()) throw new Error('请输入课件名称')
-    if (slidesStore.slides.length > 200) throw new Error('课件最多支持 200 页')
-    if (!courseId) {
-      courseId = await requestCourse()
-      if (stopped) return
-      media = new MediaSession(courseId)
-    }
+    const draft: CoursewareDocument = JSON.parse(captured)
+    if (draft.slides.length > 200) throw new Error('课件最多支持 200 页')
     if (!media) throw new Error('课件尚未初始化，请重新打开编辑器')
-    const captured = snapshot.value
-    const document = await media.persist(JSON.parse(captured))
-    const body = JSON.stringify({ document, revision })
-    // A changed payload gets a new creation key; an unchanged uncertain retry retains its key.
-    if (!coursewareId && attemptedCreation && attemptedCreation !== body) creationKey = crypto.randomUUID()
-    attemptedCreation = body
-    const result: SavedCourseware = await (await api(courseId, coursewareId ? `/${coursewareId}` : '', {
-      method: coursewareId ? 'PUT' : 'POST', body,
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': creationKey },
+    const document = await media.persist(draft)
+    const body = JSON.stringify(nextVersion
+      ? { document, revision, source_version_no: version.value, next_version_no: nextVersion, change_note: changeNote }
+      : { document, revision })
+    const path = nextVersion ? `/${coursewareId}/versions` : coursewareId ? `/${coursewareId}` : ''
+    const method = !nextVersion && coursewareId ? 'PUT' : 'POST'
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (method === 'POST') {
+      if (saveRequest?.body !== body) saveRequest = { body, key: crypto.randomUUID() }
+      headers['Idempotency-Key'] = saveRequest.key
+    }
+    const result: SavedCourseware = await (await api(lessonId, path, {
+      method, body, headers,
     })).json()
+    if (stopped) return false
     coursewareId = result.id
-    revision = result.revision
-    if (pendingAnimation.value) addHistorySnapshot()
-    pendingAnimation.value = undefined
-    savedSnapshot.value = captured
-    send('SAVED', { coursewareId, revision, returnAfterSave: returnAfterSave && !dirty.value, dirty: dirty.value })
+    applySavedMetadata(result)
+    if (nextVersion) versionNote.value = ''
+    if (confirmedAnimation && pendingAnimation.value === confirmedAnimation) {
+      for (const [index, slide] of confirmedAnimation.slides.entries()) {
+        const current = slidesStore.slides[index]
+        if (JSON.stringify(slide.animations) !== JSON.stringify(current.animations)) {
+          slidesStore.updateSlide({ animations: slide.animations }, slide.id)
+        }
+      }
+      addHistorySnapshot()
+      pendingAnimation.value = undefined
+      animationPreviewed.value = false
+    }
+    savedEditableSnapshot.value = getEditableSnapshot(draft)
+    saveRequest = undefined
+    send('SAVED', { coursewareId, revision, versionNo: version.value, versionCount: versionCount.value,
+      updatedAt: savedAt.value, dirty: dirty.value })
+    return true
   }
   catch (cause) {
+    if (stopped) return false
+    if (cause instanceof CoursewareApiError && cause.unavailableAssets.length) {
+      const recoverable = media?.invalidate(cause.unavailableAssets)
+      failure(new Error(recoverable ? '素材已过期，请再次保存以重新上传' : '素材已失效，请重新选择素材后保存'))
+      return false
+    }
     failure(cause)
-  }
-  finally {
-    operationTip.value = ''
+    if (cause instanceof CoursewareApiError && (cause.status === 409 || cause.status === 404)) {
+      send('VERSIONS_CHANGED')
+      if (coursewareId) {
+        try {
+          const versions: { version_no: number; is_current: boolean }[] =
+            await (await api(lessonId, `/${coursewareId}/versions`)).json()
+          currentVersion.value = versions.find(item => item.is_current)?.version_no ?? currentVersion.value
+          versionCount.value = versions.length
+        }
+        catch { /* Keep the draft and the original error when metadata cannot be refreshed. */ }
+      }
+    }
+    return false
   }
 }
+
+async function respondToReturn(requestId: string, saveChanges: boolean) {
+  if (readOnly) return
+  send('RETURN_ACK', {}, requestId)
+  const finished = pendingSave ? await pendingSave : true
+  let outcome = 'blocked'
+  if (finished && !busy.value && !finishVersionNote) {
+    if (!dirty.value) outcome = 'allow'
+    else if (!saveChanges) outcome = 'dirty'
+    else {
+      const saved = await save(historical.value ? 'version' : 'current')
+      outcome = saved && !dirty.value ? 'allow' : 'blocked'
+    }
+  }
+  send('RETURN_RESULT', { outcome, historical: historical.value }, requestId)
+}
+
 const dispose = subscribe(message => {
   if (message.type === 'INIT') void initialize(message.payload)
+  else if (message.type === 'RETURN_CHECK') void respondToReturn(message.requestId, false)
+  else if (message.type === 'RETURN_SAVE') void respondToReturn(message.requestId, true)
 })
 let helloTimer = 0
 function blockEditorInput(event: Event) {
-  if (!busy.value) return
+  if (!busy.value && !savingVersion.value) return
   event.preventDefault()
   event.stopPropagation()
 }
 function beforeUnload(event: BeforeUnloadEvent) {
-  if (dirty.value) {
+  if (dirty.value || saveKind.value) {
     event.preventDefault(); event.returnValue = ''
   }
 }
@@ -284,9 +503,11 @@ onMounted(() => {
 })
 onUnmounted(() => {
   stopped = true
+  finishVersionNote?.()
   dispose()
   clearInterval(helloTimer)
   clearInterval(refreshTimer)
+  clearInterval(clockTimer)
   media?.dispose()
   document.removeEventListener('keydown', blockEditorInput, true)
   document.removeEventListener('paste', blockEditorInput, true)
@@ -295,14 +516,231 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.embedded-app { height: 100%; display: flex; flex-direction: column; background: #fff; }
-.embedded-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px; border-bottom: 1px solid #ddd; font-size: 13px; }
-.embedded-toolbar > input { min-width: 100px; flex: 1; padding: 7px; border: 1px solid #ccc; border-radius: 4px; }
-.embedded-toolbar button, .import-button { padding: 7px 12px; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; background: #fff; white-space: nowrap; }
-.import-button input { display: none; }
-.embedded-content { flex: 1; min-height: 0; }
+.embedded-app {
+  --editor-primary: #0091ff;
+  --editor-primary-fill: #dff1ff;
+  --editor-border: #d0d7e2;
+  --editor-divider: #e0e6ed;
+  --editor-muted: #858b95;
+  --editor-ink: #303133;
+  --editor-surface: #fff;
+  --editor-control-radius: 5px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #f4f6f8;
+}
+.editor-header, .file-toolbar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding-inline: 18px;
+  border-bottom: 1px solid var(--editor-divider);
+  font: 13px/1.5 "PingFang SC", system-ui, sans-serif;
+}
+.editor-header {
+  min-height: 65px;
+  gap: 12px;
+  justify-content: space-between;
+  background: #f1f6ff;
+}
+.editor-heading, .editor-actions, .editor-brand { display: flex; align-items: center; }
+.editor-heading { flex: 1; min-width: 0; }
+.editor-actions { gap: 12px; }
+.text-button {
+  border: 0;
+  background: transparent;
+  color: var(--editor-primary);
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  font: inherit;
+}
+.text-button:disabled { color: var(--editor-muted); cursor: default; }
+.editor-back { width: 72px; text-align: left; flex-shrink: 0; border-right: 1px solid #d8e3f2; min-height: 25px; }
+.editor-brand {
+  width: 172px;
+  flex-shrink: 0;
+  gap: 18px;
+  min-height: 32px;
+  padding-inline: 18px 20px;
+  border-right: 1px solid #d8e3f2;
+  color: #173f71;
+  font-size: 16px;
+}
+.editor-brand span { width: 32px; color: var(--editor-primary); font-size: 24px; font-weight: 600; }
+.editor-document { display: grid; flex: 1; min-width: 0; margin-left: 20px; color: var(--editor-muted); font-size: 11px; }
+.editor-document > span { white-space: nowrap; }
+.editor-document-title {
+  color: var(--editor-ink);
+  font: 600 17px/26px "PingFang SC", system-ui, sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-status {
+  min-width: 90px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: #fff6e6;
+  color: #b77714;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.editor-actions > .text-button { min-width: 58px; }
+.editor-button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding-inline: 12px;
+  border: 1px solid var(--editor-border);
+  border-radius: var(--editor-control-radius);
+  background: var(--editor-surface);
+  color: var(--editor-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  font: inherit;
+}
+.editor-button:not(:disabled):hover { border-color: var(--editor-primary); color: var(--editor-primary); }
+.editor-button:disabled { border-color: #0000001a; background: #7d7d7d1a; color: #00000040; cursor: default; }
+.save-button { min-width: 72px; }
+.new-version-button { min-width: 119px; border-color: var(--editor-primary); color: var(--editor-primary); background: var(--editor-primary-fill); }
+.version-action { position: relative; display: inline-flex; }
+.version-limit {
+  position: absolute;
+  z-index: 30;
+  inset: calc(100% + 7px) -8px auto auto;
+  visibility: hidden;
+  width: min(282px, calc(100vw - 24px));
+  padding: 12px 10px;
+  border: 1px solid var(--editor-border);
+  border-radius: 6px;
+  background: var(--editor-surface);
+  box-shadow: 0 4px 16px #27344726;
+  color: var(--editor-ink);
+  font-size: 14px;
+}
+.version-limit::before {
+  position: absolute;
+  content: '';
+  top: -5px;
+  right: 88px;
+  width: 8px;
+  height: 8px;
+  border-top: 1px solid var(--editor-border);
+  border-left: 1px solid var(--editor-border);
+  background: var(--editor-surface);
+  transform: rotate(45deg);
+}
+.version-action:hover .version-limit, .version-action:focus-visible .version-limit { visibility: visible; }
+.file-toolbar { min-height: 43px; flex-wrap: wrap; gap: 10px; background: var(--editor-surface); }
+.file-toolbar > button { min-width: 106px; }
+.file-toolbar > .animation-import-button { min-width: 126px; }
+.file-divider { height: 18px; margin-inline: 8px 9px; border-left: 1px solid var(--editor-divider); }
+.prompt-panel {
+  width: min(520px, calc(100vw - 42px));
+  color: var(--editor-ink);
+  font: 13px/1.5 "PingFang SC", system-ui, sans-serif;
+}
+.prompt-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.prompt-panel pre {
+  max-height: min(360px, 50vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+  font: inherit;
+}
+.embedded-content { flex: 1; min-height: 0; min-width: 0; }
+.embedded-content--editing { overflow-x: auto; }
+.embedded-content--editing > :deep(.pptist-editor) { min-width: 1080px; }
 .embed-loading-mask { z-index: 10000; cursor: wait; }
 .embed-loading { margin: auto; color: #666; }
 .import-notice { padding: 8px 10px; color: #7a4b00; background: #fffbe6; font-size: 13px; }
 .embed-error { padding: 10px; color: #b42318; background: #fff1f0; }
+.version-note-dialog, .animation-dialog {
+  box-sizing: border-box;
+  width: min(416px, calc(100% - 32px));
+  padding: 24px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--editor-surface);
+  color: var(--editor-ink);
+  font: 14px/1.5 "PingFang SC", system-ui, sans-serif;
+}
+.version-note-dialog::backdrop, .animation-dialog::backdrop { background: #2734474d; }
+.animation-dialog h2 { margin: 0; color: #000; font-size: 18px; font-weight: 700; }
+.animation-dialog-error { margin: 12px 0 0; color: #b42318; }
+.animation-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.animation-dialog-button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: var(--editor-surface);
+  color: rgb(0 0 0 / 50%);
+  cursor: pointer;
+  white-space: nowrap;
+  font: inherit;
+  font-weight: 400;
+  line-height: 20px;
+}
+.animation-dialog-button--confirm {
+  border-radius: 8px;
+  background: #def1ff;
+  color: var(--editor-primary);
+}
+.animation-dialog-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.animation-dialog-button:disabled { opacity: 0.55; cursor: default; }
+.version-note-dialog h2 { margin-bottom: 16px; font-size: 18px; }
+.version-note-dialog textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--editor-border);
+  border-radius: var(--editor-control-radius);
+  font: inherit;
+  resize: vertical;
+}
+.version-note-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.courseware-loading-overlay--saving { z-index: 10001; background: #2734474d; }
+.version-saving-card {
+  width: min(432px, calc(100vw - 32px));
+  min-height: 208px;
+  padding: 23px 16px;
+  border-radius: 10px;
+  background: #fff;
+  color: #858b95;
+  font-size: 13px;
+}
+@media (max-width: 800px) {
+  .editor-header { flex-wrap: wrap; gap: 5px; padding-block: 8px; }
+  .editor-heading { flex-basis: 100%; }
+  .editor-actions { justify-content: flex-end; width: 100%; gap: 7px; }
+}
+@media (max-width: 490px) {
+  .animation-dialog { padding-inline: 16px; }
+  .editor-header, .file-toolbar { padding-inline: 9px; }
+  .editor-brand { width: auto; gap: 5px; padding-inline: 8px; }
+  .editor-brand span { width: auto; }
+  .editor-back { width: 50px; }
+  .editor-document { margin-left: 8px; }
+  .editor-actions { flex-wrap: wrap; }
+  .editor-actions > .text-button, .save-button { min-width: 45px; }
+  .file-toolbar { gap: 5px; padding-block: 5px; }
+  .file-toolbar > button, .file-toolbar > .animation-import-button, .prompt-action .editor-button { min-width: 0; padding-inline: 8px; }
+  .file-divider { margin-inline: 4px; }
+}
 </style>

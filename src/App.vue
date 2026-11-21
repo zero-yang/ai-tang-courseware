@@ -1,17 +1,16 @@
 <template>
-  <EmbedApp v-if="!standalone" />
+  <EmbedApp v-if="!standalone" @startup-complete="dismissStartupLoading" />
   <template v-else-if="slides.length">
     <Screen v-if="screening" />
     <Editor v-else-if="_isPC" />
     <Mobile v-else />
   </template>
-  <FullscreenSpin tip="数据初始化中，请稍等 ..." v-else  loading :mask="false" />
 </template>
 
 <script lang="ts" setup>
 import EmbedApp from './embed/EmbedApp.vue'
 import { embedded } from './embed/bridge'
-import { onMounted } from 'vue'
+import { onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { nanoid } from 'nanoid'
 import { useScreenStore, useMainStore, useSnapshotStore, useSlidesStore } from '@/store'
@@ -23,8 +22,6 @@ import api from '@/services'
 import Editor from './views/Editor/index.vue'
 import Screen from './views/Screen/index.vue'
 import Mobile from './views/Mobile/index.vue'
-import FullscreenSpin from '@/components/FullscreenSpin.vue'
-
 const _isPC = isPC()
 const standalone = import.meta.env.DEV && !embedded && window.parent === window
 
@@ -37,6 +34,16 @@ const { slides } = storeToRefs(slidesStore)
 const { screening } = storeToRefs(screenStore)
 
 const isAudienceMode = new URLSearchParams(window.location.search).get('mode') === 'audience'
+
+function dismissStartupLoading() {
+  document.getElementById('courseware-startup-loading')?.remove()
+}
+
+if (standalone) {
+  watch(() => slides.value.length > 0, ready => {
+    if (ready) dismissStartupLoading()
+  }, { flush: 'post' })
+}
 
 onMounted(async () => {
   if (!standalone) return
