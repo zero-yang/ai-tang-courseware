@@ -106,7 +106,7 @@
       <template v-slot:title>快捷操作</template>
     </Drawer>
 
-    <FullscreenSpin :loading="exporting" tip="正在导入..." />
+    <CoursewareLoading v-if="importing" tip="正在导入…" />
   </div>
 </template>
 
@@ -122,7 +122,7 @@ import type { DialogForExportTypes } from '@/types/export'
 
 import HotkeyDoc from './HotkeyDoc.vue'
 import FileInput from '@/components/FileInput.vue'
-import FullscreenSpin from '@/components/FullscreenSpin.vue'
+import CoursewareLoading from '@/components/CoursewareLoading.vue'
 import Drawer from '@/components/Drawer.vue'
 import Input from '@/components/Input.vue'
 import Popover from '@/components/Popover.vue'
@@ -133,7 +133,7 @@ const mainStore = useMainStore()
 const slidesStore = useSlidesStore()
 const { title } = storeToRefs(slidesStore)
 const { enterScreening, enterScreeningFromStart } = useScreening()
-const { importSpecificFile, importPPTXFile, importJSON, exporting } = useImport()
+const { importSpecificFile, importPPTXFile, importJSON, exporting: importing } = useImport()
 const { resetSlides } = useSlideHandler()
 
 const mainMenuVisible = ref(false)

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { omit } from 'lodash'
+import { createDefaultSlideTheme } from '@/configs/defaultSlideTheme'
 import type { Slide, SlideTheme, PPTElement, PPTAnimation, SlideTemplate } from '@/types/slides'
 import { detachMovedLineConnections, hasLineConnectionChanges, resolveLineConnections } from '@/utils/element'
 
@@ -32,23 +33,7 @@ export interface SlidesState {
 export const useSlidesStore = defineStore('slides', {
   state: (): SlidesState => ({
     title: '未命名演示文稿', // 幻灯片标题
-    theme: {
-      themeColors: ['#5b9bd5', '#ed7d31', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
-      fontColor: '#333',
-      fontName: '',
-      backgroundColor: '#fff',
-      shadow: {
-        h: 3,
-        v: 3,
-        blur: 2,
-        color: '#808080',
-      },
-      outline: {
-        width: 2,
-        color: '#525252',
-        style: 'solid',
-      },
-    }, // 主题样式
+    theme: createDefaultSlideTheme(), // 主题样式
     slides: [], // 幻灯片页面数据
     slideIndex: 0, // 当前页面索引
     viewportSize: 1000, // 可视区域宽度基数

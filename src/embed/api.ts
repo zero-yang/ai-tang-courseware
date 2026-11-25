@@ -72,6 +72,7 @@ export class MediaSession {
   private uploads = new Map<string, Promise<string>>()
   private loaded = new Map<string, Promise<string>>()
   private urls = new Set<string>()
+  private disposed = false
   constructor(private lessonId: string) {}
   private async map(value: unknown, transform: (value: string) => Promise<string>): Promise<unknown> {
     if (typeof value === 'string') return transform(value)
@@ -130,17 +131,24 @@ export class MediaSession {
       if (!pending) {
         pending = (async () => {
           const response = await api(this.lessonId, `/assets/${value.slice(6)}`)
-          const url = URL.createObjectURL(await response.blob())
+          const blob = await response.blob()
+          if (this.disposed) throw new Error('课件已关闭')
+          const url = URL.createObjectURL(blob)
           this.urls.add(url)
           this.stableReferences.set(url, value)
           return url
         })()
         this.loaded.set(value, pending)
+        const request = pending
+        request.catch(() => {
+          if (this.loaded.get(value) === request) this.loaded.delete(value)
+        })
       }
       return await pending
     }) as CoursewareDocument
   }
   dispose() {
+    this.disposed = true
     for (const url of this.urls) URL.revokeObjectURL(url); this.urls.clear()
   }
 }

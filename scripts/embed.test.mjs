@@ -56,12 +56,13 @@ test('embedded preview sends a cloneable unsaved snapshot and preserves the edit
 test('bridge validates sources; credentials coalesce; media survives serialize and rehydrate', async () => {
   const listeners = []
   const messages = []
+  let issuedToken = 'test-only-token'
   const parent = { postMessage(message, origin) {
     assert.equal(origin, 'http://parent.test')
     messages.push(message)
     if (message.type === 'TOKEN_REQUEST') {
       queueMicrotask(() => dispatch({ ...message,
-        type: 'TOKEN', payload: { token: 'test-only-token', expires_in: 300 } }))
+        type: 'TOKEN', payload: { token: issuedToken, expires_in: 300 } }))
     }
   } }
   globalThis.location = { search: '?embed=edit&parentOrigin=http%3A%2F%2Fparent.test&instanceId=test-instance' }
@@ -93,10 +94,16 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
   const originalFetch = globalThis.fetch
   const assets = new Map()
   let failedUpload = false
+  let failedRead = true
   globalThis.fetch = async (url, init = {}) => {
     if (!String(url).startsWith('http://api.test')) return await originalFetch(url, init)
-    assert.match(String(url), /^http:\/\/api\.test\/api\/v1\/lessons\/1\/courseware\/assets/)
-    assert.equal(init.headers.Authorization, 'Bearer test-only-token')
+    const targetLesson = String(url).includes('/lessons/2/')
+    if (targetLesson) {
+      assert.equal(init.method || 'GET', 'GET')
+      assert.equal(init.headers.Authorization, 'Bearer lesson-two-token')
+    }
+    else assert.equal(init.headers.Authorization, 'Bearer test-only-token')
+    assert.match(String(url), /^http:\/\/api\.test\/api\/v1\/lessons\/[12]\/courseware\/assets/)
     assert.equal(init.credentials, 'omit')
     if (init.method === 'POST') {
       if (failedUpload) return Response.json({ message: 'storage unavailable' }, { status: 503 })
@@ -104,7 +111,9 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
       assets.set(id, init.body)
       return Response.json({ id, reference: `asset:${id}` }, { status: 201 })
     }
-    return new Response(assets.get(String(url).split('/').pop()))
+    const id = String(url).split('/').pop()
+    if (failedRead || !assets.has(id)) return Response.json({ message: 'asset unavailable' }, { status: 404 })
+    return new Response(assets.get(id))
   }
   try {
     const source = { slides: [{ elements: [
@@ -118,12 +127,23 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
     assert.equal(persisted.slides[0].elements[3].src, 'https://external.test/video.mp4')
     assert.match(source.slides[0].elements[0].src, /^data:/)
     assert.doesNotMatch(JSON.stringify(persisted), /data:|blob:/)
+    await assert.rejects(media.hydrate(persisted), { status: 404 })
+    assert.match(persisted.slides[0].elements[0].src, /^asset:/)
+    failedRead = false
     const hydrated = await media.hydrate(persisted)
     const mediaUrl = hydrated.slides[0].elements[0].src
     assert.match(mediaUrl, /^blob:/)
     assert.deepEqual(new Uint8Array(await (await originalFetch(mediaUrl)).arrayBuffer()), new Uint8Array([1, 2, 3]))
     assert.deepEqual(await media.persist(hydrated), persisted)
     assert.equal(assets.size, 2)
+    issuedToken = 'lesson-two-token'
+    const otherClient = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}#lesson-two`)
+    const targetMedia = new otherClient.MediaSession('2')
+    const imported = await targetMedia.hydrate(persisted)
+    assert.match(imported.slides[0].elements[0].src, /^blob:/)
+    assert.deepEqual(await targetMedia.persist(imported), persisted)
+    assert.equal(assets.size, 2)
+    targetMedia.dispose()
     failedUpload = true
     const failed = { slides: [{ src: 'data:audio/wav;base64,BwgJ' }] }
     await assert.rejects(media.persist(failed), /storage unavailable/)
@@ -141,6 +161,66 @@ test('bridge validates sources; credentials coalesce; media survives serialize a
   }
   finally {
     globalThis.fetch = originalFetch 
+  }
+})
+
+test('full-courseware import accepts both export formats and checks the document before use', async () => {
+  const built = await build({ entryPoints: ['src/embed/documentImport.ts'], alias: { '@': './src' }, bundle: true, write: false, platform: 'node', format: 'esm',
+    plugins: [{ name: 'browser-markup-boundary', setup(builder) {
+      builder.onResolve({ filter: /^dompurify$/ }, () => ({ path: 'dompurify', namespace: 'browser' }))
+      builder.onLoad({ filter: /^dompurify$/, namespace: 'browser' }, () => ({ contents: 'export default { sanitize: value => value }' }))
+    } }],
+  })
+  const { parseCoursewareDocument, readCoursewareDocument } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`)
+  const position = { left: 10, top: 20, width: 200, height: 100, rotate: 0 }
+  const document = { format_version: 1, width: 960, height: 720, theme: {
+    backgroundColor: '#fafafa', themeColors: ['#222'], fontName: '', fontColor: '#222',
+    outline: { style: 'solid' }, shadow: { h: 1, v: 2, blur: 3, color: '#444' },
+  }, slides: [
+    { id: 'page1', elements: [
+      { ...position, id: 'text', type: 'text', content: '<p>课件</p>', link: { type: 'web', target: 'https://example.com' } },
+      { ...position, id: 'image', type: 'image', src: 'asset:123' },
+      { ...position, id: 'audio', type: 'audio', src: 'data:audio/wav;base64,AQID' },
+    ], remark: '<p>备注</p>', turningMode: 'fade', animations: [
+      { id: 'a1', elId: 'text', type: 'in', effect: 'fadeIn', duration: 1000, trigger: 'click' },
+    ] },
+    { id: 'page2', elements: [], background: { type: 'solid', color: '#eee' } },
+  ] }
+
+  const raw = JSON.stringify(document)
+  assert.deepEqual(parseCoursewareDocument('\uFEFF' + raw), document)
+  const legacyTheme = parseCoursewareDocument(JSON.stringify({ ...document, theme: { backgroundColor: '#ddd' } })).theme
+  assert.equal(legacyTheme.backgroundColor, '#ddd')
+  assert.equal(legacyTheme.fontColor, '#333')
+  const envelope = { base_id: 'original', document, allowed_effects: {}, instructions: '示例' }
+  assert.deepEqual(await readCoursewareDocument(new File([JSON.stringify(envelope)], '课件.JSON')), document)
+  assert.throws(() => parseCoursewareDocument('{broken'), /无法解析/)
+  assert.throws(() => parseCoursewareDocument(JSON.stringify({ base_id: 'original', changes: [] })), /导入动画变更/)
+  for (const [changes, expected] of [
+    [{ format_version: 2 }, /版本 1/],
+    [{ height: 10001 }, /画布宽高/],
+    [{ theme: { ...document.theme, themeColors: null } }, /课件主题/],
+    [{ slides: [] }, /1–200 页/],
+    [{ slides: Array(201).fill(document.slides[0]) }, /1–200 页/],
+    [{ slides: [document.slides[0], document.slides[0]] }, /ID 重复/],
+    [{ slides: [{ id: 'invalid', elements: [null] }] }, /元素结构/],
+    [{ slides: [{ id: 'invalid', elements: [], animations: {} }] }, /动画结构/],
+    [{ slides: [{ id: 'invalid', elements: [{ ...position, id: 'image', type: 'image', src: 'blob:expired' }] }] }, /临时素材/],
+    [{ slides: [{ id: 'invalid', elements: [{ ...position, id: 'image', type: 'image', src: 'asset:invalid' }] }] }, /私有素材引用/],
+    [{ slides: [{ id: 'invalid', elements: [{ ...position, id: 'text', type: 'text', content: '', link: { type: 'web', target: 'file:///example' } }] }] }, /链接/],
+  ]) {
+    assert.throws(() => parseCoursewareDocument(JSON.stringify({ ...document, ...changes })), expected)
+  }
+  await assert.rejects(readCoursewareDocument({ name: 'big.json', size: 100 * 1024 * 1024 + 1 }), /100 MiB/)
+
+  for (const element of [
+    { type: 'image', src: 'asset:123', clip: { range: [[0, 0], [100, 100]], shape: 'unknown' } },
+    { type: 'shape', viewBox: [100, 100], path: 'M 0 0', pathFormula: 'unknown' },
+    { type: 'chart', chartType: 'pie', themeColors: [], data: { labels: [], legends: [], series: [] } },
+    { type: 'table', colWidths: [1], cellMinHeight: 10, data: [[{ id: 'cell', colspan: 1, rowspan: 1, text: '' }]] },
+  ]) {
+    const slides = [{ id: 'invalid', elements: [{ ...position, id: 'invalid', ...element }] }]
+    assert.throws(() => parseCoursewareDocument(JSON.stringify({ ...document, slides })), /元素结构/)
   }
 })
 

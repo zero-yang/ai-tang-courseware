@@ -5,9 +5,10 @@ export default () => {
   const snapshotStore = useSnapshotStore()
 
   // 添加历史快照(历史记录)
-  const addHistorySnapshot = debounce(function() {
-    snapshotStore.addSnapshot()
+  const addSnapshot = debounce(function(generation: number) {
+    snapshotStore.addSnapshot(generation)
   }, 300, { trailing: true })
+  const addHistorySnapshot = () => addSnapshot(snapshotStore.snapshotGeneration)
 
   // 重做
   const redo = throttle(function() {

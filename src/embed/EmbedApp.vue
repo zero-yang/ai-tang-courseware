@@ -22,6 +22,8 @@
     <div v-if="!readOnly && initialized" class="file-toolbar">
       <button type="button" class="editor-button" :disabled="busy" @click="pptxInput?.click()">导入 PPTX</button>
       <input ref="pptxInput" type="file" accept=".pptx" hidden @change="importFile" />
+      <button type="button" class="editor-button" :disabled="busy || !!saveKind || !!pendingAnimation" @click="jsonInput?.click()">导入课件 JSON</button>
+      <input ref="jsonInput" type="file" accept=".json,application/json" hidden @change="importDocument" />
       <button type="button" class="editor-button" :disabled="busy" @click="exportDocument">导出 JSON</button>
       <span class="file-divider" aria-hidden="true"></span>
       <button type="button" class="editor-button animation-import-button" :disabled="busy" @click="animationInput?.click()">导入动画变更</button>
@@ -47,8 +49,17 @@
     <div v-if="!initialized && error" class="embed-loading">请返回管理端重试</div>
     <div v-if="initialized" class="embedded-content" :class="{ 'embedded-content--editing': !readOnly }">
       <Screen v-if="screening" />
-      <Editor v-else-if="!readOnly" />
+      <Editor v-else-if="!readOnly" :key="editorDocumentKey" />
     </div>
+    <dialog v-if="!readOnly" ref="documentImportDialog" class="animation-dialog" aria-labelledby="document-import-title"
+      aria-describedby="document-import-description" @close="resolveDocumentImport" @keydown.stop @keyup.stop @paste.stop>
+      <h2 id="document-import-title">覆盖当前课件？</h2>
+      <p id="document-import-description" class="document-import-description">导入将替换当前编辑内容，并重置撤销记录。</p>
+      <form method="dialog" class="animation-dialog-actions">
+        <button type="submit" class="animation-dialog-button" value="cancel" autofocus>取消</button>
+        <button type="submit" class="animation-dialog-button animation-dialog-button--confirm" value="replace">确认覆盖</button>
+      </form>
+    </dialog>
     <dialog v-if="!readOnly" ref="animationDialog" class="animation-dialog" aria-labelledby="animation-dialog-title"
       @cancel.prevent @keydown.stop @keyup.stop @paste.stop>
       <h2 id="animation-dialog-title">动画已校验，请预览后确认保存。</h2>
@@ -73,7 +84,8 @@
       </form>
     </dialog>
   </div>
-  <FullscreenSpin class="embed-loading-mask" :loading="busy" :tip="operationTip" />
+  <CoursewareLoading v-if="importTip" :tip="importTip" />
+  <FullscreenSpin class="embed-export-loading-mask" :loading="exportingDocument" tip="正在导出课件…" />
   <div v-if="savingVersion" class="courseware-loading-overlay courseware-loading-overlay--saving" role="status" aria-live="polite">
     <div class="courseware-loading-content version-saving-card">
       <span class="courseware-loading-spinner" aria-hidden="true"></span>
@@ -92,24 +104,28 @@ import { saveAs } from 'file-saver'
 import animationSkill from '../../.agents/skills/courseware-animation/SKILL.md?raw'
 import { applyAnimations, effects, fingerprint, prompt } from './animationExchange'
 import { nanoid } from 'nanoid'
-import { useSlidesStore, useScreenStore, useSnapshotStore } from '@/store'
+import { useMainStore, useSlidesStore, useScreenStore, useSnapshotStore } from '@/store'
 import useImport from '@/hooks/useImport'
 import useHistorySnapshot from '@/hooks/useHistorySnapshot'
 import useScreening from '@/hooks/useScreening'
+import CoursewareLoading from '@/components/CoursewareLoading.vue'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
 import Popover from '@/components/Popover.vue'
 import { copyText } from '@/utils/clipboard'
+import { resolveLineConnections } from '@/utils/element'
 import message from '@/utils/message'
 import Editor from '@/views/Editor/index.vue'
 import Screen from '@/views/Screen/index.vue'
 import { bridgeAllowed, readOnly, send, subscribe } from './bridge'
 import { api, CoursewareApiError, getToken, MediaSession, type CoursewareDocument, type SavedCourseware } from './api'
+import { readCoursewareDocument } from './documentImport'
 import { getEditableSnapshot } from './editableSnapshot'
 
 dayjs.extend(relativeTime)
 
 const emit = defineEmits<{ (event: 'startupComplete'): void }>()
 const { addHistorySnapshot } = useHistorySnapshot()
+const mainStore = useMainStore()
 const slidesStore = useSlidesStore()
 const screenStore = useScreenStore()
 const snapshotStore = useSnapshotStore()
@@ -118,15 +134,19 @@ const { enterScreening } = useScreening()
 const screening = computed(() => screenStore.screening)
 const initialized = ref(false)
 const error = ref('')
-const operationTip = ref('')
-const busy = computed(() => !!operationTip.value)
+const importTip = ref('')
+const exportingDocument = ref(false)
+const busy = computed(() => !!importTip.value || exportingDocument.value)
 const importNotice = ref('')
+const editorDocumentKey = ref(0)
 const heading = ref('课件')
 const savedEditableSnapshot = ref('')
 const pendingAnimation = ref<CoursewareDocument>()
 const animationPreviewed = ref(false)
 const animationDialog = ref<HTMLDialogElement>()
+const documentImportDialog = ref<HTMLDialogElement>()
 const pptxInput = ref<HTMLInputElement>()
+const jsonInput = ref<HTMLInputElement>()
 const animationInput = ref<HTMLInputElement>()
 const version = ref(0)
 const currentVersion = ref(0)
@@ -148,6 +168,7 @@ let media: MediaSession | undefined
 let saveRequest: { body: string; key: string } | undefined
 let pendingSave: Promise<boolean> | undefined
 let finishVersionNote: ((note?: string) => void) | undefined
+let finishDocumentImport: ((confirmed: boolean) => void) | undefined
 let starting = false
 let stopped = false
 let refreshTimer = 0
@@ -263,7 +284,7 @@ async function importFile(event: Event) {
     failure(new Error('请选择不超过 100 MB 的 PPTX 文件')); return
   }
   if ((coursewareId || dirty.value && slidesStore.slides.some(slide => slide.elements.length)) && !window.confirm('导入将替换当前课件内容，是否继续？')) return
-  operationTip.value = '正在导入 PPTX…'
+  importTip.value = '正在导入 PPTX…'
   error.value = ''
   const before = JSON.parse(snapshot.value) as CoursewareDocument
   try {
@@ -278,9 +299,84 @@ async function importFile(event: Event) {
     failure(cause)
   }
   finally {
-    operationTip.value = ''
+    importTip.value = ''
   }
 }
+
+function confirmDocumentImport() {
+  const dialog = documentImportDialog.value
+  if (!dialog) return Promise.resolve(false)
+  dialog.returnValue = ''
+  dialog.showModal()
+  return new Promise<boolean>(resolve => {
+    finishDocumentImport = resolve
+  })
+}
+
+function resolveDocumentImport() {
+  const finish = finishDocumentImport
+  finishDocumentImport = undefined
+  finish?.(documentImportDialog.value?.returnValue === 'replace')
+}
+
+async function importDocument(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || readOnly || !media || busy.value || saveKind.value || pendingAnimation.value || finishVersionNote || finishDocumentImport) return
+  importTip.value = '正在校验课件 JSON…'
+  try {
+    const imported = await readCoursewareDocument(file)
+    if (stopped) return
+    if (coursewareId || dirty.value) {
+      importTip.value = ''
+      if (!await confirmDocumentImport() || stopped) return
+    }
+
+    error.value = ''
+    importTip.value = '正在导入课件素材…'
+    const document = await media.hydrate(imported).catch(cause => {
+      if (cause instanceof CoursewareApiError && cause.status === 403) {
+        throw new Error('没有权限在当前单课读取课件素材')
+      }
+      if (cause instanceof CoursewareApiError && [404, 422].includes(cause.status)) {
+        throw new Error('课件素材已失效，请重新选择素材')
+      }
+      throw cause
+    })
+    if (stopped) return
+
+    const slides = document.slides.map(slide => ({ ...slide, elements: resolveLineConnections(slide.elements) }))
+    await snapshotStore.resetSnapshotDatabase(slides, 0).catch(() => {
+      throw new Error('无法重置课件撤销记录，请重试')
+    })
+    if (stopped) return
+
+    slidesStore.$patch(state => {
+      state.slides = slides
+      state.theme = document.theme
+      state.viewportSize = document.width
+      state.viewportRatio = document.height / document.width
+      state.slideIndex = 0
+    })
+    mainStore.$patch({
+      activeElementIdList: [], handleElementId: '', activeGroupElementId: '', hiddenElementIdList: [],
+      selectedSlidesIndex: [], selectedTableCells: [], clipingImageElementId: '',
+      creatingElement: null, creatingCustomShape: false, textFormatPainter: null, shapeFormatPainter: null,
+    })
+    editorDocumentKey.value++
+    importNotice.value = '课件 JSON 已导入'
+  }
+  catch (cause) {
+    if (stopped) return
+    importNotice.value = ''
+    failure(cause)
+  }
+  finally {
+    importTip.value = ''
+  }
+}
+
 function previewAnimations() {
   if (!pendingAnimation.value || busy.value || saveKind.value) return
   send('PREVIEW', { document: JSON.parse(draftSnapshot.value), startIndex: 0 })
@@ -304,7 +400,7 @@ function stableDocument() {
 }
 async function exportDocument() {
   if (busy.value || pendingAnimation.value) return
-  operationTip.value = '正在导出课件…'
+  exportingDocument.value = true
   error.value = ''
   try {
     const document = await stableDocument()
@@ -315,7 +411,7 @@ async function exportDocument() {
     failure(cause)
   }
   finally {
-    operationTip.value = ''
+    exportingDocument.value = false
   }
 }
 async function importAnimations(event: Event) {
@@ -323,7 +419,7 @@ async function importAnimations(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file || busy.value || pendingAnimation.value) return
-  operationTip.value = '正在校验动画变更…'
+  importTip.value = '正在校验动画变更…'
   error.value = ''
   try {
     if (file.size > 5 * 1024 * 1024) throw new Error('动画变更文件不能超过 5 MB')
@@ -336,7 +432,7 @@ async function importAnimations(event: Event) {
     failure(cause)
   }
   finally {
-    operationTip.value = ''
+    importTip.value = ''
   }
 }
 function cancelAnimations() {
@@ -368,7 +464,7 @@ function resolveVersionNote() {
 }
 
 async function save(kind: SaveKind): Promise<boolean> {
-  if (readOnly || finishVersionNote || !(kind === 'version' ? canSaveVersion.value : canSaveCurrent.value)) return false
+  if (readOnly || finishVersionNote || finishDocumentImport || !(kind === 'version' ? canSaveVersion.value : canSaveCurrent.value)) return false
   if (pendingAnimation.value && !animationPreviewed.value) {
     failure(new Error('请先预览动画变更，再保存课件'))
     return false
@@ -462,7 +558,7 @@ async function respondToReturn(requestId: string, saveChanges: boolean) {
   send('RETURN_ACK', {}, requestId)
   const finished = pendingSave ? await pendingSave : true
   let outcome = 'blocked'
-  if (finished && !busy.value && !finishVersionNote) {
+  if (finished && !busy.value && !finishVersionNote && !finishDocumentImport) {
     if (!dirty.value) outcome = 'allow'
     else if (!saveChanges) outcome = 'dirty'
     else {
@@ -504,6 +600,7 @@ onMounted(() => {
 onUnmounted(() => {
   stopped = true
   finishVersionNote?.()
+  finishDocumentImport?.(false)
   dispose()
   clearInterval(helloTimer)
   clearInterval(refreshTimer)
@@ -664,7 +761,7 @@ onUnmounted(() => {
 .embedded-content { flex: 1; min-height: 0; min-width: 0; }
 .embedded-content--editing { overflow-x: auto; }
 .embedded-content--editing > :deep(.pptist-editor) { min-width: 1080px; }
-.embed-loading-mask { z-index: 10000; cursor: wait; }
+.embed-export-loading-mask { z-index: 10000; cursor: wait; }
 .embed-loading { margin: auto; color: #666; }
 .import-notice { padding: 8px 10px; color: #7a4b00; background: #fffbe6; font-size: 13px; }
 .embed-error { padding: 10px; color: #b42318; background: #fff1f0; }
@@ -680,6 +777,7 @@ onUnmounted(() => {
 }
 .version-note-dialog::backdrop, .animation-dialog::backdrop { background: #2734474d; }
 .animation-dialog h2 { margin: 0; color: #000; font-size: 18px; font-weight: 700; }
+.document-import-description { margin: 12px 0 0; }
 .animation-dialog-error { margin: 12px 0 0; color: #b42318; }
 .animation-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .animation-dialog-button {
